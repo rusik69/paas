@@ -45,6 +45,61 @@ func TestRegistry_IsBackedByReplicatedStorage(t *testing.T) {
 	}
 }
 
+// Both the containerd mirror and the socket load balancer are per-node
+// configuration, so one scheduled pod proves only whichever node the scheduler
+// happened to pick — and a mirror missing from a single node's machine config
+// stays invisible until something schedules there.
+//
+// Pinned by nodeName rather than scheduled, tolerating everything: the control
+// plane carries a NoSchedule taint (allowSchedulingOnControlPlanes: false) and
+// its containerd pulls images just the same.
+func runOnEveryNode(t *testing.T, ns, name string, spec corev1.PodSpec) {
+	t.Helper()
+
+	nodes, err := clientset.CoreV1().Nodes().List(t.Context(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(nodes.Items) == 0 {
+		t.Fatal("cluster has no nodes")
+	}
+
+	for _, n := range nodes.Items {
+		pinned := spec
+		pinned.NodeName = n.Name
+		pinned.RestartPolicy = corev1.RestartPolicyNever
+		pinned.Tolerations = []corev1.Toleration{{Operator: corev1.TolerationOpExists}}
+		createPod(t, ns, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name + "-" + n.Name},
+			Spec:       pinned,
+		})
+	}
+
+	// Named, so the log shows which nodes the run actually covered rather than
+	// leaving "every node" to be taken on trust.
+	t.Logf("%s on %d nodes: %s", name, len(nodes.Items), strings.Join(nodeNames(nodes.Items), " "))
+
+	for _, n := range nodes.Items {
+		pod := name + "-" + n.Name
+		phase, err := waitPodTerminated(t, ns, pod, 5*time.Minute)
+		if err != nil {
+			t.Errorf("node %s: pod %s did not terminate: %v", n.Name, pod, err)
+			continue
+		}
+		if phase != corev1.PodSucceeded {
+			t.Errorf("node %s: pod %s phase = %s, want %s", n.Name, pod, phase, corev1.PodSucceeded)
+		}
+	}
+}
+
+func nodeNames(nodes []corev1.Node) []string {
+	names := make([]string, len(nodes))
+	for i, n := range nodes {
+		names[i] = n.Name
+	}
+	return names
+}
+
 func registryClusterIP(t *testing.T) string {
 	t.Helper()
 
@@ -134,30 +189,17 @@ func TestRegistry_ClusterIPReachableFromHostNetwork(t *testing.T) {
 		}
 	})
 
-	createPod(t, ns, &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "fetcher"},
-		Spec: corev1.PodSpec{
-			HostNetwork:   true,
-			RestartPolicy: corev1.RestartPolicyNever,
-			Containers: []corev1.Container{{
-				Name:  "main",
-				Image: *busyboxImage,
-				// wget's own exit status carries the result: non-zero on any
-				// connection failure, which is what turns an unreachable
-				// ClusterIP into a Failed pod rather than a silent success.
-				Command: []string{"wget", "-q", "-O", "/dev/null", fmt.Sprintf("http://%s:5000/v2/", clusterIP)},
-			}},
-		},
+	runOnEveryNode(t, ns, "fetcher", corev1.PodSpec{
+		HostNetwork: true,
+		Containers: []corev1.Container{{
+			Name:  "main",
+			Image: *busyboxImage,
+			// wget's own exit status carries the result: non-zero on any
+			// connection failure, which is what turns an unreachable
+			// ClusterIP into a Failed pod rather than a silent success.
+			Command: []string{"wget", "-q", "-O", "/dev/null", fmt.Sprintf("http://%s:5000/v2/", clusterIP)},
+		}},
 	})
-
-	phase, err := waitPodTerminated(t, ns, "fetcher", 2*time.Minute)
-	if err != nil {
-		t.Fatalf("fetcher pod did not terminate: %v", err)
-	}
-	if phase != corev1.PodSucceeded {
-		t.Fatalf("fetcher phase = %s, want %s — the registry Service clusterIP %s was not reachable from the host network namespace",
-			phase, corev1.PodSucceeded, clusterIP)
-	}
 }
 
 // The end-to-end proof: an image pushed into the cluster registry is pullable
@@ -205,27 +247,15 @@ func TestRegistry_PushedImageIsPullableThroughTheTalosMirror(t *testing.T) {
 
 	// Pulled by mirror host, so success means containerd resolved
 	// registry.paas.io through machine.registries and reached the Service IP
-	// from the host namespace.
-	createPod(t, ns, &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "puller"},
-		Spec: corev1.PodSpec{
-			RestartPolicy: corev1.RestartPolicyNever,
-			Containers: []corev1.Container{{
-				Name:    "main",
-				Image:   registryMirrorHost + "/" + ref,
-				Command: []string{"true"},
-			}},
-		},
+	// from the host namespace. The tag is unique per run, so no node can pass
+	// on a layer another node already cached.
+	runOnEveryNode(t, ns, "puller", corev1.PodSpec{
+		Containers: []corev1.Container{{
+			Name:    "main",
+			Image:   registryMirrorHost + "/" + ref,
+			Command: []string{"true"},
+		}},
 	})
-
-	phase, err := waitPodTerminated(t, ns, "puller", 5*time.Minute)
-	if err != nil {
-		t.Fatalf("puller pod did not terminate: %v", err)
-	}
-	if phase != corev1.PodSucceeded {
-		t.Fatalf("puller phase = %s, want %s — a node could not pull %s/%s through the Talos mirror",
-			phase, corev1.PodSucceeded, registryMirrorHost, ref)
-	}
 }
 
 func waitJobSucceeded(t *testing.T, ns, name string, timeout time.Duration) error {

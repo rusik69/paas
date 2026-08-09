@@ -178,10 +178,12 @@ func TestCluster_ReplicatedStorageClassesExist(t *testing.T) {
 
 	byName := map[string]bool{}
 	durability := map[string]string{}
+	placement := map[string]string{}
 	var defaults []string
 	for _, sc := range classes.Items {
 		byName[sc.Name] = true
 		durability[sc.Name] = sc.Annotations["paas.io/durability"]
+		placement[sc.Name] = sc.Parameters["linstor.csi.linbit.com/placementCount"]
 		if sc.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" {
 			defaults = append(defaults, sc.Name)
 		}
@@ -197,5 +199,15 @@ func TestCluster_ReplicatedStorageClassesExist(t *testing.T) {
 	}
 	if got := durability["scratch"]; got != "non-durable" {
 		t.Errorf("scratch paas.io/durability = %q, want %q", got, "non-durable")
+	}
+
+	// The number in the name is the contract every later phase is written
+	// against. Editing the parameter without renaming the class downgrades
+	// every volume it provisions, and the only visible symptom is data loss
+	// on a node failure the class promised to survive.
+	for name, want := range map[string]string{"replicated-2": "2", "replicated-3": "3"} {
+		if got := placement[name]; got != want {
+			t.Errorf("storageclass %s placementCount = %q, want %q", name, got, want)
+		}
 	}
 }
