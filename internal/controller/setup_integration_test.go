@@ -11,6 +11,7 @@ import (
 
 	"github.com/rusik69/paas/internal/controller/packagesource"
 	pkgctl "github.com/rusik69/paas/internal/controller/pkg"
+	platformctl "github.com/rusik69/paas/internal/controller/platform"
 )
 
 // Registration is where a missing scheme entry or a watch on a kind the cluster
@@ -34,5 +35,10 @@ func TestSetupWithManager_RegistersBothReconcilers(t *testing.T) {
 	if err := (&pkgctl.Reconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).
 		SetupWithManager(mgr); err != nil {
 		t.Errorf("register package reconciler: %v", err)
+	}
+	if err := (&platformctl.Reconciler{
+		Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Fetcher: &fakeFetcher{},
+	}).SetupWithManager(mgr); err != nil {
+		t.Errorf("register platform reconciler: %v", err)
 	}
 }
