@@ -1,0 +1,14 @@
+# Worker-only machine-config patch.
+#
+# The second disk (/dev/vdb) is left entirely alone here: Piraeus creates the
+# LVM thin pool on it via LinstorSatelliteConfiguration. Partitioning it from
+# Talos as well would mean two owners for one device.
+machine:
+  features:
+    kubePrism:
+      enabled: true
+      port: 7445
+  nodeLabels:
+    # Piraeus targets satellites by label, and the e2e storage assertions use
+    # it to pick which node to kill.
+    paas.io/storage-node: "true"

@@ -1,0 +1,44 @@
+# Machine-config patch applied to every node, control plane and worker alike.
+machine:
+  install:
+    # Rendered by e2e.sh from the Image Factory schematic ID. Upgrading a node
+    # to a bare siderolabs/installer image silently drops every extension.
+    image: "${TALOS_INSTALLER_IMAGE}"
+    disk: /dev/vda
+    wipe: false
+  kernel:
+    modules:
+      # usermode_helper=disabled: DRBD's default is to invoke helper scripts
+      # from the host on state changes. Talos has no such scripts and no shell,
+      # so leaving it enabled makes every DRBD state transition log an error and
+      # some of them fail outright.
+      - name: drbd
+        parameters:
+          - usermode_helper=disabled
+      - name: drbd_transport_tcp
+  kubelet:
+    extraMounts:
+      # LINSTOR keeps its satellite state here and needs it shared into the
+      # kubelet mount namespace, otherwise volumes attach inside the container
+      # and are invisible to the pods that requested them.
+      - destination: /var/lib/piraeus-datastore
+        type: bind
+        source: /var/lib/piraeus-datastore
+        options:
+          - bind
+          - rshared
+          - rw
+  time:
+    disabled: false
+    servers:
+      - time.cloudflare.com
+cluster:
+  network:
+    # Cilium is installed by helm after bootstrap. Talos must not lay down
+    # flannel first: two CNIs racing over the same interfaces produces
+    # intermittent pod networking that looks like a Cilium bug.
+    cni:
+      name: none
+  proxy:
+    # Replaced by Cilium's eBPF implementation. See ADR 0002.
+    disabled: true

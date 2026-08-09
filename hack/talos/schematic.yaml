@@ -1,0 +1,18 @@
+# Talos Image Factory schematic.
+#
+# POSTed to ${IMAGE_FACTORY}/schematics; the returned ID names both the boot
+# media and the installer image, and the two MUST come from the same schematic
+# or the extensions vanish on first `talosctl upgrade`.
+#
+# drbd is not optional. Piraeus/LINSTOR loads the drbd kernel module on the
+# satellite; Talos ships no module it was not built with, so without this
+# extension the first replicated PVC hangs in Pending with a mount error that
+# never mentions DRBD.
+#
+# qemu-guest-agent lets libvirt report guest IPs and shut guests down cleanly,
+# which is what makes `e2e.sh down` fast instead of a forced power-off.
+customization:
+  systemExtensions:
+    officialExtensions:
+      - siderolabs/drbd
+      - siderolabs/qemu-guest-agent

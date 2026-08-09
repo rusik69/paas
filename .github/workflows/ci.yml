@@ -1,0 +1,118 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # Keep in step with go.mod. A mismatch here surfaces as a build failure in CI
+  # only, which is the most expensive place to discover it.
+  GO_VERSION: "1.26"
+
+jobs:
+  # Everything in this job must stay fast enough to run on every keystroke
+  # locally. The moment it needs a cluster, the tier boundary has been violated
+  # (roadmap.md, sequencing notes).
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: go vet
+        run: make vet
+
+      - name: unit tests
+        run: make test
+
+      - name: e2e suite compiles
+        # The e2e tests are behind a build tag and therefore invisible to the
+        # unit job. Without this they rot silently until someone next brings up
+        # a cluster.
+        run: go vet -tags e2e ./...
+
+      - name: generated files are current
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+      - name: shellcheck
+        run: shellcheck hack/*.sh
+
+      - name: shell formatting
+        run: |
+          go run mvdan.cc/sh/v3/cmd/shfmt@latest -d -ln bash hack/*.sh
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: govulncheck
+        run: make vuln
+
+  # Pinned external versions rot without anyone noticing until a bring-up fails
+  # halfway through. Checked on a schedule rather than per-PR so a deleted
+  # upstream release does not block unrelated work.
+  versions:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: hack/versions.sh check
+
+  # E2E needs nested KVM, which GitHub-hosted runners do not provide. The job is
+  # defined so the wiring is real and reviewable; it runs on a self-hosted
+  # runner with /dev/kvm, and is skipped everywhere else rather than silently
+  # absent.
+  e2e:
+    if: vars.E2E_RUNNER != ''
+    runs-on: ${{ vars.E2E_RUNNER }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: tooling
+        run: hack/deps.sh check
+
+      - name: cluster up
+        run: make cluster-up
+
+      - name: e2e assertions
+        run: make e2e
+
+      - name: cluster status on failure
+        if: failure()
+        run: make cluster-status
+
+      - name: cluster down
+        # Always: a leaked libvirt domain holds several GB of RAM and poisons
+        # the next run on a self-hosted runner.
+        if: always()
+        run: make cluster-down

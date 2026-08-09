@@ -1,0 +1,10 @@
+# e2e working directory: talos secrets, machine configs, kubeconfig, downloaded images
+/.e2e/
+/bin/
+/dist/
+
+# Never commit a kubeconfig or a talosconfig — both carry cluster-admin credentials.
+kubeconfig
+talosconfig
+*.pem
+*.key

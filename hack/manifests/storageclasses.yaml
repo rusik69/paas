@@ -1,0 +1,57 @@
+# The two durable StorageClasses named in architecture.md §8, plus the scratch
+# class that must never be used for anything a tenant would miss.
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: replicated-3
+  annotations:
+    # Everything durable defaults here. A tenant who does not choose gets the
+    # safe option; making the cheap option the default is how data is lost.
+    storageclass.kubernetes.io/is-default-class: "true"
+    paas.io/durability: replicated
+provisioner: linstor.csi.linbit.com
+# WaitForFirstConsumer: with Immediate, the volume is placed before the
+# scheduler picks a node, and the pod then lands somewhere without a local
+# replica — every read crosses the network for the life of the volume.
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  linstor.csi.linbit.com/storagePool: pool
+  linstor.csi.linbit.com/placementCount: "3"
+  linstor.csi.linbit.com/allowRemoteVolumeAccess: "true"
+  csi.storage.k8s.io/fstype: ext4
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: replicated-2
+  annotations:
+    paas.io/durability: replicated
+provisioner: linstor.csi.linbit.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  linstor.csi.linbit.com/storagePool: pool
+  linstor.csi.linbit.com/placementCount: "2"
+  linstor.csi.linbit.com/allowRemoteVolumeAccess: "true"
+  csi.storage.k8s.io/fstype: ext4
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: scratch
+  annotations:
+    # Read by the phase-3 catalog generator. A class without this annotation is
+    # assumed durable, so the label goes on at creation, not later.
+    paas.io/durability: non-durable
+provisioner: linstor.csi.linbit.com
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  linstor.csi.linbit.com/storagePool: pool
+  linstor.csi.linbit.com/placementCount: "1"
+  csi.storage.k8s.io/fstype: ext4

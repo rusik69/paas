@@ -12,7 +12,8 @@ Built on Talos Linux, Kubernetes, Cilium, Piraeus/LINSTOR, KubeVirt, and Flux.
 
 ## Status
 
-Design phase. No product code yet.
+Phase 0 — foundation. The e2e harness, Talos install flow, Cilium and
+Piraeus/DRBD are in place; no platform code yet.
 
 | Document | What it covers |
 |---|---|
@@ -27,3 +28,19 @@ Design phase. No product code yet.
 Everything through phase 4 runs on three local KVM guests booting Talos, driven by
 `hack/e2e.sh`. No physical hardware is needed until phase 5. See
 [docs/roadmap.md](docs/roadmap.md#development-and-test-environment) for prerequisites.
+
+```sh
+make deps            # report missing tooling
+make deps-install    # install it (needs sudo; log out and back in for group changes)
+make versions        # confirm every pinned upstream version still resolves
+
+make test            # unit tests, race detector on, under ten seconds
+
+make cluster-up      # three Talos guests, Cilium, Piraeus, StorageClasses
+make e2e             # the Go assertions, including the replicated-3 failover test
+make cluster-down
+```
+
+`hack/e2e.sh` provisions infrastructure and asserts nothing; every assertion lives in Go
+under [test/e2e/](test/e2e/). Pinned versions live in one place,
+[hack/versions.sh](hack/versions.sh).

@@ -1,0 +1,40 @@
+# Piraeus satellite configuration for the e2e cluster.
+#
+# Creates an LVM thin pool named `vg-paas/thin` on each worker's second disk.
+# Thin, not thick: replicated-3 needs three copies of every volume and a 20 GB
+# scratch disk cannot hold three thickly-provisioned 5 GB PVCs plus overhead.
+apiVersion: piraeus.io/v1
+kind: LinstorSatelliteConfiguration
+metadata:
+  name: paas-storage-pool
+spec:
+  nodeSelector:
+    matchLabels:
+      paas.io/storage-node: "true"
+  storagePools:
+    - name: pool
+      lvmThinPool:
+        volumeGroup: vg-paas
+        thinPool: thin
+      source:
+        hostDevices:
+          - /dev/vdb
+  patches:
+    # DRBD on a virtual NIC with the default 4 MB send buffer stalls under
+    # resync on a loaded host, and the stall surfaces as a PVC that never
+    # reaches UpToDate rather than as a network error.
+    - target:
+        kind: Pod
+        name: satellite
+      patch: |
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: satellite
+        spec:
+          containers:
+            - name: linstor-satellite
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
