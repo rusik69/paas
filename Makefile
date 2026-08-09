@@ -6,6 +6,10 @@ GO ?= go
 # tier boundary has been violated and the feedback loop is gone for good.
 UNIT_TIMEOUT ?= 60s
 E2E_TIMEOUT  ?= 45m
+INTEGRATION_TIMEOUT ?= 10m
+# Tracks the cluster's Kubernetes version: envtest must serve the same API
+# surface the reconcilers will meet in production.
+ENVTEST_K8S_VERSION ?= 1.34.x
 
 # Statement coverage floor for the unit tier, enforced in CI.
 #
@@ -46,6 +50,15 @@ vet: ## go vet — separate from lint, non-negotiable in CI
 .PHONY: vet-e2e
 vet-e2e: ## The e2e suite is behind a build tag and invisible to `make test`
 	$(GO) vet -tags e2e ./...
+
+.PHONY: vet-integration
+vet-integration: ## The envtest suite is behind a build tag and invisible to `make test`
+	$(GO) vet -tags integration ./...
+
+.PHONY: test-integration
+test-integration: ## envtest — a real apiserver and etcd, no kubelet
+	KUBEBUILDER_ASSETS="$$($(GO) run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(call pin,SETUP_ENVTEST_VERSION) use -p path $(ENVTEST_K8S_VERSION))" \
+		$(GO) test -tags integration -race -timeout $(INTEGRATION_TIMEOUT) ./...
 
 .PHONY: generate
 generate: ## controller-gen: deepcopy methods and CRD manifests
@@ -88,7 +101,7 @@ vuln: ## govulncheck — blocks merge in CI
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@$(call pin,GOVULNCHECK_VERSION) ./...
 
 .PHONY: verify
-verify: vet vet-e2e lint cover check-stdout ## Everything that must pass before pushing
+verify: vet vet-e2e vet-integration lint cover check-stdout ## Everything that must pass before pushing
 
 ## --- environment -------------------------------------------------------------
 

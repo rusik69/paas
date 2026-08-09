@@ -62,6 +62,21 @@ jobs:
           make generate
           git diff --exit-code
 
+  # A real kube-apiserver and etcd with no kubelet. Separate from unit because
+  # it downloads control-plane binaries and takes minutes rather than seconds —
+  # but it is not e2e either: no nodes, no CNI, no storage.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: envtest suite
+        run: make test-integration
+
   lint:
     runs-on: ubuntu-latest
     steps:

@@ -22,6 +22,10 @@ GOVULNCHECK_VERSION="${GOVULNCHECK_VERSION:-v1.6.0}"
 # 0.36, and generates schemas for an apimachinery we do not run.
 CONTROLLER_GEN_VERSION="${CONTROLLER_GEN_VERSION:-v0.19.0}"
 
+# Versioned independently of the control-plane binaries it downloads; the
+# asset version is ENVTEST_K8S_VERSION in the Makefile and tracks the cluster.
+SETUP_ENVTEST_VERSION="${SETUP_ENVTEST_VERSION:-v0.24.1}"
+
 TALOS_VERSION="${TALOS_VERSION:-v1.11.2}" # must match TALOSCTL_VERSION
 KUBERNETES_VERSION="${KUBERNETES_VERSION:-v1.34.1}"
 CILIUM_VERSION="${CILIUM_VERSION:-1.18.12}" # helm chart version
@@ -81,6 +85,7 @@ versions_check() {
 	_check_url shfmt "https://github.com/mvdan/sh/releases/tag/${SHFMT_VERSION}" || rc=1
 	_check_url govulncheck "https://github.com/golang/vuln/releases/tag/${GOVULNCHECK_VERSION}" || rc=1
 	_check_url controller-gen "https://github.com/kubernetes-sigs/controller-tools/releases/tag/${CONTROLLER_GEN_VERSION}" || rc=1
+	_check_url setup-envtest "https://github.com/kubernetes-sigs/controller-runtime/releases/tag/${SETUP_ENVTEST_VERSION}" || rc=1
 
 	# Buffered rather than piped into grep: under `set -o pipefail`, grep -q
 	# exiting early makes curl fail with SIGPIPE and the chart reads as missing.
