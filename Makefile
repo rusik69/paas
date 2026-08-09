@@ -19,7 +19,7 @@ ENVTEST_K8S_VERSION ?= 1.34.x
 #
 # Add a package here when it becomes load-bearing. Raise the floor when a phase
 # lands above it; never lower it to make a red build green.
-COVERED_PACKAGES ?= internal/crd pkg/wait
+COVERED_PACKAGES ?= internal/crd internal/flux internal/kube pkg/wait
 COVERAGE_MIN ?= 95
 MODULE := github.com/rusik69/paas
 
@@ -98,6 +98,17 @@ generate: ## controller-gen: deepcopy methods and CRD manifests
 		object paths=./api/...
 	$(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(call pin,CONTROLLER_GEN_VERSION) \
 		crd paths=./api/... output:crd:artifacts:config=internal/crd/manifests
+
+# Vendored rather than fetched at runtime, for the reason the CRDs are embedded:
+# a binary should install the versions it was built against, and an operator
+# that reaches the network on startup fails in a new way.
+.PHONY: vendor-flux
+vendor-flux: ## Regenerate the vendored Flux manifests from the pinned CLI
+	@command -v flux >/dev/null || { echo "flux not installed: run 'make deps-install'"; exit 1; }
+	@mkdir -p internal/flux/manifests
+	flux install --export \
+		--components=source-controller,helm-controller \
+		--namespace=flux-system >internal/flux/manifests/flux.yaml
 
 .PHONY: actionlint
 actionlint: ## Lint the GitHub Actions workflows
