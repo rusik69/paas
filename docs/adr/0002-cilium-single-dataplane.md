@@ -38,7 +38,7 @@ For a small team standing up a platform from nothing, that cost lands early and 
 | Ingress routing | Cilium Gateway API implementation |
 | Observability | Hubble flow metrics — which also supply per-tenant egress bytes for billing |
 
-**Kube-OVN is deferred to phase 5**, and introduced only for tenant VPC networking, attached
+**Kube-OVN is deferred to phase 6**, and introduced only for tenant VPC networking, attached
 to VMs via Multus as a secondary interface. It does not become the pod CNI.
 
 ## Consequences
@@ -61,18 +61,18 @@ to VMs via Multus as a secondary interface. It does not become the pod CNI.
 - Cilium's Gateway API implementation is less battle-worn for exotic HTTP routing than
   ingress-nginx. If a tenant needs something it cannot express, the escape hatch is running
   ingress-nginx as a tenant-level `extra` behind the Gateway, not replacing the dataplane.
-- Deferring Kube-OVN means the phase 5 VM networking design is not proven now. Accepted:
+- Deferring Kube-OVN means the phase 6 VM networking design is not proven now. Accepted:
   the alternative is carrying an unused overlay through four phases.
 - Adding Kube-OVN later, alongside a running Cilium, is genuinely more disruptive than having
-  installed both from the start. This is the main risk of the decision and the reason phase 5
+  installed both from the start. This is the main risk of the decision and the reason phase 6
   gets a dedicated networking spike.
 
 ## Alternatives rejected
 
 **Kube-OVN + Cilium + MetalLB from day one.** The end state is more capable and is the right
 answer for a platform whose primary product is VMs with real VPCs. Ours is
-managed services and apps; VMs are phase 5. Paying the operational cost from phase 0 for a
-capability first needed in phase 5 is the wrong trade for this product.
+managed services and apps; VMs are phase 6. Paying the operational cost from phase 0 for a
+capability first needed in phase 6 is the wrong trade for this product.
 
 **Calico + MetalLB + ingress-nginx.** The conventional, boring choice, and defensible. Loses
 Hubble-based egress metering, needs a fourth component for Gateway API, and does not remove

@@ -38,7 +38,7 @@ comparatively little prior art to copy — which is precisely why it is the diff
 - Images are pushed to the in-cluster registry (Zot or Harbor, backed by SeaweedFS) and
   **referenced by digest, never by tag**, everywhere downstream.
 
-**Open sub-decision, to be settled by a spike before phase 4 implementation:** whether to run
+**Open sub-decision, to be settled by a spike before phase 5 implementation:** whether to run
 the lifecycle via [kpack](https://github.com/buildpacks-community/kpack) or via our own thin
 `Build` controller.
 

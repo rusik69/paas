@@ -8,7 +8,7 @@ version plus the mistakes that are specific to this codebase.
 
 A multi-tenant PaaS on bare metal: Talos → Kubernetes → Cilium → Piraeus/DRBD,
 with tenants nested as namespaces and three products on top (managed data
-services, a Heroku-style app plane, KubeVirt VMs). Phase 0 of seven.
+services, a Heroku-style app plane, KubeVirt VMs). Phase 0 of eight.
 
 ## Read before writing code
 
@@ -134,7 +134,7 @@ to get wrong:
 - **Gateway API CRDs are pinned to what Cilium declares conformance against.**
   A newer release installs fields the Cilium operator does not understand and
   reports it as a GatewayClass reconcile error.
-- **Do not build phase 5 before phase 4.** VMs are the most seductive and least
+- **Do not build phase 6 before phase 5.** VMs are the most seductive and least
   differentiating piece of the platform.
 
 ## Working agreements

@@ -1,6 +1,6 @@
 # Roadmap
 
-Build order for the architecture in [architecture.md](architecture.md). Phases 3 and 4 are
+Build order for the architecture in [architecture.md](architecture.md). Phases 3 to 5 are
 the product; 0–2 exist to make them possible.
 
 Each phase's "done when" is a test that runs in CI, not a judgement call. The tiers referenced
@@ -8,15 +8,15 @@ below are defined in [testing.md](testing.md).
 
 ## Development and test environment
 
-**Everything through phase 4 is developed and tested on local KVM virtual machines running
+**Everything through phase 5 is developed and tested on local KVM virtual machines running
 Talos** — three libvirt/KVM guests driven by `hack/e2e.sh`, one control plane and two workers,
 which is the minimum that exercises DRBD replication and pod anti-affinity honestly. No
-physical hardware is required until phase 5, where live migration and BGP peering need real
+physical hardware is required until phase 6, where live migration and BGP peering need real
 NICs and a real top-of-rack switch.
 
 Talos boots from its `metal` ISO or qcow2 image; machine configuration is delivered to each
 guest by the installer templates. Nested virtualisation must be enabled on the host, because
-phase 5 runs KubeVirt inside these guests — check `/sys/module/kvm_intel/parameters/nested`
+phase 6 runs KubeVirt inside these guests — check `/sys/module/kvm_intel/parameters/nested`
 (or `kvm_amd`) before assuming it works.
 
 Prerequisites on the dev machine — **none of these are currently installed**, so phase 0
@@ -101,7 +101,27 @@ The `ServiceClass` machinery and the first three catalog entries.
 CNPG cluster, `kubectl get postgres` reports a real primary, and deleting the CR reclaims
 everything.
 
-### Phase 4 — App plane
+### Phase 4 — Dashboard
+
+The web UI. It sits here because it is the first phase with something worth rendering: the
+`ServiceClass` catalog and the `values.schema.json` that generates its forms both arrive in
+phase 3, and building the UI before them means hand-writing forms that the generator would
+have produced.
+
+- Read-only first: tenant tree, service catalog from `ServiceClass`, object status from
+  conditions. A UI that can only observe is useful on day one and cannot corrupt anything.
+- Forms generated from `values.schema.json`, never hand-written per service. A service added
+  by adding a chart must appear in the UI by the same act, or the phase-3 property is lost.
+- OIDC login against the phase-2 provider, with the tenant's own kubeconfig identity. The UI
+  holds no privileges of its own — every call is made as the logged-in user, so RBAC and the
+  isolation tests cover the UI for free.
+- Write paths last: create, edit and delete for the kinds the catalog exposes.
+
+**Done when:** a tenant user logs in, sees only their own namespaces, creates a `Postgres`
+from a generated form, and watches it reach Ready — and a second tenant's objects are absent
+from the API responses, not merely hidden in the client.
+
+### Phase 5 — App plane
 
 The Heroku layer. This is the differentiator; it gets the most care.
 
@@ -118,7 +138,7 @@ The Heroku layer. This is the differentiator; it gets the most care.
 **Done when:** a git push produces an HTTPS URL serving the app, with a database attached via
 `attachments`, and scale-to-zero followed by a cold request works.
 
-### Phase 5 — VMs
+### Phase 6 — VMs
 
 First phase that needs real hardware.
 
@@ -130,11 +150,11 @@ First phase that needs real hardware.
 **Done when:** a VM boots, live-migrates between nodes without dropping a ping, and its
 console is reachable through the dashboard.
 
-### Phase 6 — Commercial
+### Phase 7 — Commercial
 
 - `paas-usage` collectors and hourly rollups; egress from Hubble flow metrics.
 - Plan-enforcement validating webhook; settle the overage policy first.
-- Dashboard and billing portal.
+- Billing portal, on the phase-4 dashboard.
 - Velero schedules, CNPG WAL archiving, and a restore drill wired into CI.
 
 **Done when:** an invoice line matches independently measured usage, and the scheduled
@@ -151,9 +171,10 @@ green.
 | 1 | envtest harness and `setup-envtest` pinning; `Platform`/`Package` reconciler tests; chart golden-file rendering |
 | 2 | Tenant reconciler tests; **the isolation suite** — its first version ships with the isolation it tests, never after |
 | 3 | Schema-conversion unit tests and fuzz corpus; SSA drift and conflict tests; per-chart schema accept/reject tables |
-| 4 | Full e2e journey including build, routing, attachment, scale-to-zero; fixture apps in Go and Node so buildpack detection is exercised |
-| 5 | Live-migration and node-failure tests on real hardware; VM console smoke test |
-| 6 | Restore drills in CI; usage-arithmetic unit tests; scale/soak at 200 tenants |
+| 4 | Playwright journey against a real cluster: login, generated form, object reaches Ready; a cross-tenant read asserted absent from the API response, not hidden in the client |
+| 5 | Full e2e journey including build, routing, attachment, scale-to-zero; fixture apps in Go and Node so buildpack detection is exercised |
+| 6 | Live-migration and node-failure tests on real hardware; VM console smoke test |
+| 7 | Restore drills in CI; usage-arithmetic unit tests; scale/soak at 200 tenants |
 
 Three standing rules, from phase 0 onward:
 
@@ -181,10 +202,10 @@ Two rules about ordering that are easy to violate under deadline pressure:
 
 ## Sequencing notes
 
-- **Do not build phase 5 before phase 4.** VMs are the most seductive and least
+- **Do not build phase 6 before phase 5.** VMs are the most seductive and least
   differentiating piece of the platform.
 - Shard Flux in phase 1, not later. Retrofitting sharding across live tenants is painful.
-- Metering (phase 6) shapes the tenant model, so keep the per-namespace attribution labels
+- Metering (phase 7) shapes the tenant model, so keep the per-namespace attribution labels
   correct from phase 2 onward even though nothing reads them yet.
 - Keep `make test` under ten seconds from phase 0. The moment unit tests need a cluster, the
   tier boundary has been violated and the feedback loop is gone for good.

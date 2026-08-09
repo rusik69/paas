@@ -54,7 +54,7 @@ L2  Flux (source/helm controllers, sharded) · cert-manager · KEDA
     Prometheus/Grafana/Loki · Velero · Keycloak/Dex
     ─────────────────────────────────────────────────────────────
 L1  Cilium (CNI, eBPF, Gateway API, BGP) · Piraeus/LINSTOR (DRBD)
-    SeaweedFS (S3) · Kube-OVN (VM VPCs, phase 5) · Harbor/Zot registry
+    SeaweedFS (S3) · Kube-OVN (VM VPCs, phase 6) · Harbor/Zot registry
     ─────────────────────────────────────────────────────────────
 L0  Talos Linux · 3+ control-plane nodes · etcd on NVMe · VIP
 ```
@@ -324,7 +324,7 @@ only. Bash provisions, Go asserts.
   availability. Both the DRBD replication factor and whether live migration is viable at all
   depend on the answer.
 - **kpack versus our own build controller** — see [ADR 0003](adr/0003-buildpacks-app-plane.md);
-  needs a spike before phase 4.
+  needs a spike before phase 5.
 - **Overage policy** — throttle, block, or bill. Changes the admission webhook design.
 - **Regions and availability zones** — single cluster now, or a fleet from day one? Affects
   `Platform` and the tenant identifier namespace. Recommendation: single cluster, but never

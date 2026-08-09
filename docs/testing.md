@@ -133,11 +133,11 @@ Charts are tenant-facing API, so they get tested like API.
 
 **Environment: three local KVM guests running Talos**, managed through libvirt — one control
 plane, two workers. That is the minimum that honestly exercises DRBD replication, pod
-anti-affinity, and live failover. No physical hardware is needed until phase 5.
+anti-affinity, and live failover. No physical hardware is needed until phase 6.
 
 Practical constraints worth knowing before writing the harness:
 
-- **Nested virtualisation** must be on for phase 5, since KubeVirt then runs inside these
+- **Nested virtualisation** must be on for phase 6, since KubeVirt then runs inside these
   guests. Assert it in `hack/e2e.sh` preflight rather than discovering it as a confusing
   KubeVirt failure.
 - **Give each worker a second virtual disk** for DRBD. Piraeus needs raw block devices, and a
@@ -254,7 +254,7 @@ Nightly on a dedicated cluster, and before every release:
 | Every PR | unit + integration + chart + lint + `go vet` + `govulncheck` + build |
 | Merge queue | the above plus e2e, isolation, upgrade |
 | Nightly | restore drills, scale/soak, fuzz, dependency audit |
-| Pre-release | everything, plus a manual failover exercise on real hardware from phase 5 |
+| Pre-release | everything, plus a manual failover exercise on real hardware from phase 6 |
 
 Every test job runs with `-race`. Integration and e2e jobs upload cluster state on failure —
 `kubectl get all -A`, controller logs, and Flux status — because an e2e failure with no

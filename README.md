@@ -26,8 +26,8 @@ Piraeus/DRBD and the in-cluster registry are in place; no platform code yet.
 
 ## Development
 
-Everything through phase 4 runs on three local KVM guests booting Talos, driven by
-`hack/e2e.sh`. No physical hardware is needed until phase 5. See
+Everything through phase 5 runs on three local KVM guests booting Talos, driven by
+`hack/e2e.sh`. No physical hardware is needed until phase 6. See
 [docs/roadmap.md](docs/roadmap.md#development-and-test-environment) for prerequisites.
 
 ```sh
