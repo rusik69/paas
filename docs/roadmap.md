@@ -67,6 +67,8 @@ asserted by the suite itself, with `make cover` and every CI job green.
 `paas-operator` and the packaging/delivery machinery.
 
 - `api/v1alpha1` scaffolding; CRDs embedded in the operator binary and applied on every start.
+  *(Landed: the three types, controller-gen wiring, the embedded manifests, the applier and
+  the envtest tier. The reconcilers below are outstanding.)*
 - Flux bootstrap from the operator (source-controller + helm-controller, sharded).
 - `Platform`, `PackageSource`, `Package` reconcilers; two-stage OCI repositories so
   migrations land before component upgrades.

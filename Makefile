@@ -11,7 +11,7 @@ INTEGRATION_TIMEOUT ?= 10m
 # surface the reconcilers will meet in production.
 ENVTEST_K8S_VERSION ?= 1.34.x
 
-# Statement coverage floor for the unit tier, enforced in CI.
+# Statement coverage floor across the unit and envtest tiers, enforced in CI.
 #
 # A ratchet, not a target: raise it when a phase lands with more coverage, never
 # lower it to make a red build green. Coverage measures which lines ran, not
@@ -34,18 +34,22 @@ test: ## Unit tests, race detector on. Must stay under ten seconds.
 	$(GO) test -race -timeout $(UNIT_TIMEOUT) ./...
 
 .PHONY: cover
+# One run with the integration tag rather than two profiles merged: the untagged
+# unit tests compile into this build too, so it is the union already, and merging
+# profiles by hand double-counts every block both tiers execute. Gating on the
+# unit tier alone would demand fake-client tests for server-side apply, which
+# go-guidelines forbids — testing SSA against a fake tests the fake.
+#
+# Two exclusions. Generated deepcopy is mechanical and large enough to dominate
+# the number in either direction. cmd/ is flag wiring by construction, because
+# go-guidelines requires it stay thin and everything real live below; measuring
+# it would reward moving logic up into main(), which is backwards. If a cmd/
+# file ever grows logic worth testing, that logic is in the wrong package.
 cover: ## Coverage across both test tiers, failing below COVERAGE_MIN
-	# One run with the integration tag, not two profiles merged: the untagged
-	# unit tests compile into this build too, so this is the union already, and
-	# merging profiles by hand double-counts the blocks both tiers execute.
-	#
-	# Gating on the unit tier alone would demand fake-client tests for
-	# server-side apply, which go-guidelines forbids: testing SSA against a fake
-	# tests the fake.
 	KUBEBUILDER_ASSETS="$$($(ENVTEST_ASSETS))" \
 		$(GO) test -tags integration -race -timeout $(INTEGRATION_TIMEOUT) \
 		-coverprofile=coverage.out -covermode=atomic ./...
-	@grep -v '/zz_generated\.' coverage.out >coverage.filtered && mv coverage.filtered coverage.out
+	@grep -vE '/zz_generated\.|/cmd/' coverage.out >coverage.filtered && mv coverage.filtered coverage.out
 	@$(GO) tool cover -func=coverage.out | tail -1
 	@total=$$($(GO) tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$$3); print $$3}'); \
 	awk -v got="$$total" -v min=$(COVERAGE_MIN) 'BEGIN { \

@@ -119,3 +119,28 @@ func TestApply_LeavesFieldsItDoesNotSpecify(t *testing.T) {
 		t.Error("a field the manifest never sets was removed; apply is behaving as a replace")
 	}
 }
+
+// The path cmd/paas-operator takes, exercised end to end against a real
+// apiserver so the binary's only untested part is its flag wiring.
+func TestInstall_FromARestConfig(t *testing.T) {
+	n, err := Install(t.Context(), restCfg, 2*time.Minute)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	want, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if n != len(want) {
+		t.Errorf("Install reported %d CRDs, want %d", n, len(want))
+	}
+}
+
+func TestInstall_ReportsAnUnreachableAPIServer(t *testing.T) {
+	bad := *restCfg
+	bad.Host = "https://127.0.0.1:1"
+
+	if _, err := Install(t.Context(), &bad, 2*time.Second); err == nil {
+		t.Error("an unreachable apiserver was reported as a successful install")
+	}
+}

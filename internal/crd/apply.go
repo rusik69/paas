@@ -6,7 +6,9 @@ import (
 	"time"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/rusik69/paas/pkg/wait"
@@ -63,4 +65,34 @@ func waitEstablished(ctx context.Context, c client.Client, name string) error {
 		}
 		return false, nil
 	})
+}
+
+// Install builds a client from cfg and applies every embedded CRD, returning
+// how many were installed.
+//
+// It exists so cmd/paas-operator stays flag wiring and nothing else, which is
+// what keeps the logic here reachable from a test.
+func Install(ctx context.Context, cfg *rest.Config, timeout time.Duration) (int, error) {
+	scheme := runtime.NewScheme()
+	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
+		return 0, fmt.Errorf("build scheme: %w", err)
+	}
+
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return 0, fmt.Errorf("build client: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	if err := Apply(ctx, c); err != nil {
+		return 0, fmt.Errorf("install CRDs: %w", err)
+	}
+
+	crds, err := Load()
+	if err != nil {
+		return 0, err
+	}
+	return len(crds), nil
 }
