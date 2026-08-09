@@ -29,6 +29,8 @@ var (
 		"path to the e2e cluster kubeconfig; defaults to $KUBECONFIG")
 	e2eScript = flag.String("e2e-script", "../../hack/e2e.sh",
 		"path to the provisioning script, used for node power control")
+	versionsScript = flag.String("versions-script", "../../hack/versions.sh",
+		"path to the pinned-version definitions")
 	busyboxImage = flag.String("busybox-image", envOr("E2E_BUSYBOX_IMAGE", "busybox:1.36"),
 		"image used by storage fixtures")
 
@@ -97,6 +99,22 @@ func topology(t *testing.T) []node {
 		t.Fatalf("topology has %d nodes, want at least 3 — DRBD replication needs three", len(nodes))
 	}
 	return nodes
+}
+
+// Read from hack/versions.sh rather than restated, or the test can agree with
+// itself while disagreeing with the cluster.
+func pinnedVersion(t *testing.T, name string) string {
+	t.Helper()
+
+	script := fmt.Sprintf("source %q; printf '%%s' \"${%s}\"", *versionsScript, name)
+	out, err := exec.CommandContext(t.Context(), "bash", "-c", script).Output()
+	if err != nil {
+		t.Fatalf("read %s from %s: %v", name, *versionsScript, err)
+	}
+	if len(out) == 0 {
+		t.Fatalf("%s is empty in %s", name, *versionsScript)
+	}
+	return string(out)
 }
 
 // powerOff hard-kills a guest and registers its restart with t.Cleanup, so a

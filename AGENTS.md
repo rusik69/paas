@@ -26,10 +26,11 @@ surrounding code alone — several of them are deliberate and unusual.
 ## Commands
 
 ```sh
+make verify        # vet + vet-e2e + cover. Run before every commit
 make test          # unit tests, -race. Must stay under ten seconds
-make vet           # go vet
-make verify        # vet + test; run before every commit
-go vet -tags e2e ./...   # the e2e suite is invisible to `make test`; check it compiles
+make cover         # tests plus the coverage floor (COVERAGE_MIN)
+make vet-e2e       # the e2e suite is invisible to `make test`; check it compiles
+make actionlint    # the CI workflows are a deliverable and nothing else checks them
 
 make deps          # report missing tooling
 make versions      # confirm every pinned upstream version still resolves
@@ -65,6 +66,25 @@ linter, which is why they are listed here.
    after the feature it guards is deleted.
 7. **Never fork an upstream chart.** Vendor it under `charts/` and patch it, so
    upstream updates stay mechanical.
+8. **E2E runs on real Talos guests. Always.** Never kind, never minikube, never
+   a mocked API server. A substitute makes the suite green while testing none of
+   what it exists to prove. `TestCluster_NodesAreRealTalosGuests` enforces this.
+9. **Coverage is comprehensive and `make cover` gates it.** Cover error and
+   conflict paths, not only the happy one; every bug fixed gets the test that
+   would have caught it. Raise `COVERAGE_MIN` when a phase lands above it, never
+   lower it to make a build green.
+10. **Every gate is a CI job.** A check that runs only when someone remembers is
+    not a gate. Adding a rule means adding a job in
+    [.github/workflows/ci.yml](.github/workflows/ci.yml).
+11. **Write fewer comments.** Default to none. A comment earns its place only by
+    explaining *why* — a non-obvious constraint, an upstream bug, a decision
+    that looks wrong until you know the reason. Comments that restate the code
+    go stale and then lie. Doc comments on exported identifiers are the
+    exception and stay required.
+12. **Keep code clean and concise.** The smallest change that fully does the
+    job, in the plainest form the language offers. No speculative abstraction,
+    no options nobody asked for, no helper with one caller. Every extra line is
+    a line the next person has to read and someone has to keep working.
 
 ## Layout
 

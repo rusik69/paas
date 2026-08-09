@@ -4,6 +4,11 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    # Pinned external versions rot without anyone noticing until a bring-up
+    # fails halfway through. Checked nightly rather than per-PR so a deleted
+    # upstream release does not block unrelated work.
+    - cron: "17 3 * * *"
 
 permissions:
   contents: read
@@ -29,14 +34,21 @@ jobs:
       - name: go vet
         run: make vet
 
-      - name: unit tests
-        run: make test
-
       - name: e2e suite compiles
         # The e2e tests are behind a build tag and therefore invisible to the
         # unit job. Without this they rot silently until someone next brings up
         # a cluster.
-        run: go vet -tags e2e ./...
+        run: make vet-e2e
+
+      - name: unit tests and coverage floor
+        run: make cover
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage.out
+          if-no-files-found: warn
 
       - name: generated files are current
         run: |
@@ -60,23 +72,38 @@ jobs:
         run: shellcheck hack/*.sh
 
       - name: shell formatting
-        run: |
-          go run mvdan.cc/sh/v3/cmd/shfmt@latest -d -ln bash hack/*.sh
+        run: go run mvdan.cc/sh/v3/cmd/shfmt@latest -d -ln bash hack/*.sh
 
-  vuln:
+      - name: workflow lint
+        # This file is itself a deliverable and nothing else type-checks it.
+        run: make actionlint
+
+  # Proves hack/deps.sh install actually works on a machine that has none of
+  # the tools. Every developer runs it exactly once, on a machine nobody else
+  # can reproduce, which is precisely the code that rots unwatched.
+  #
+  # A hosted runner has no nested virtualisation and no re-logged-in shell for
+  # the new group membership, so this asserts the tools and stops there;
+  # host capabilities are the e2e job's problem.
+  tooling:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-          cache: true
-      - name: govulncheck
-        run: make vuln
 
-  # Pinned external versions rot without anyone noticing until a bring-up fails
-  # halfway through. Checked on a schedule rather than per-PR so a deleted
-  # upstream release does not block unrelated work.
+      - name: install toolchain from scratch
+        run: hack/deps.sh install
+
+      - name: every pinned tool is present at its pinned version
+        run: hack/deps.sh check --tools-only
+
+      - name: install is idempotent
+        # A second run must install nothing and still exit clean. Without this
+        # the script is only ever exercised against an empty machine, and the
+        # re-run path — which is what developers actually hit — is untested.
+        run: |
+          hack/deps.sh install
+          hack/deps.sh check --tools-only
+
   versions:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
@@ -84,10 +111,15 @@ jobs:
       - uses: actions/checkout@v4
       - run: hack/versions.sh check
 
-  # E2E needs nested KVM, which GitHub-hosted runners do not provide. The job is
-  # defined so the wiring is real and reviewable; it runs on a self-hosted
-  # runner with /dev/kvm, and is skipped everywhere else rather than silently
-  # absent.
+  # E2E runs against real Talos guests on KVM and nothing else. kind or minikube
+  # would make this job green while testing none of what phase 0 exists to
+  # prove: the DRBD system extension, DRBD replication, and unclean node loss.
+  # test/e2e asserts the nodes really are Talos, so a substituted cluster fails
+  # rather than passes.
+  #
+  # GitHub-hosted runners provide no nested KVM, so this needs a self-hosted
+  # runner with /dev/kvm. It is skipped rather than silently absent when
+  # E2E_RUNNER is unset.
   e2e:
     if: vars.E2E_RUNNER != ''
     runs-on: ${{ vars.E2E_RUNNER }}
@@ -98,8 +130,10 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - name: tooling
-        run: hack/deps.sh check
+      - name: runner has real virtualisation
+        run: |
+          test -w /dev/kvm || { echo "::error::/dev/kvm is not writable — this runner cannot host Talos guests"; exit 1; }
+          hack/deps.sh check
 
       - name: cluster up
         run: make cluster-up

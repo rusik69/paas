@@ -7,6 +7,14 @@ GO ?= go
 UNIT_TIMEOUT ?= 60s
 E2E_TIMEOUT  ?= 45m
 
+# Statement coverage floor for the unit tier, enforced in CI.
+#
+# A ratchet, not a target: raise it when a phase lands with more coverage, never
+# lower it to make a red build green. Coverage measures which lines ran, not
+# whether anything was asserted about them, so it is a floor under carelessness
+# and not evidence that the tests are good.
+COVERAGE_MIN ?= 85
+
 .PHONY: help
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"; printf "\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -17,9 +25,26 @@ help: ## Show this help
 test: ## Unit tests, race detector on. Must stay under ten seconds.
 	$(GO) test -race -timeout $(UNIT_TIMEOUT) ./...
 
+.PHONY: cover
+cover: ## Unit coverage, failing below COVERAGE_MIN
+	$(GO) test -race -timeout $(UNIT_TIMEOUT) -coverprofile=coverage.out -covermode=atomic ./...
+	@$(GO) tool cover -func=coverage.out | tail -1
+	@total=$$($(GO) tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$$3); print $$3}'); \
+	awk -v got="$$total" -v min=$(COVERAGE_MIN) 'BEGIN { \
+		if (got+0 < min+0) { printf "coverage %.1f%% is below the %s%% floor\n", got, min; exit 1 } \
+		printf "coverage %.1f%% (floor %s%%)\n", got, min }'
+
 .PHONY: vet
 vet: ## go vet — separate from lint, non-negotiable in CI
 	$(GO) vet ./...
+
+.PHONY: vet-e2e
+vet-e2e: ## The e2e suite is behind a build tag and invisible to `make test`
+	$(GO) vet -tags e2e ./...
+
+.PHONY: actionlint
+actionlint: ## Lint the GitHub Actions workflows
+	$(GO) run github.com/rhysd/actionlint/cmd/actionlint@latest
 
 .PHONY: lint
 lint: ## golangci-lint (installed on demand into ./bin)
@@ -41,7 +66,7 @@ vuln: ## govulncheck — blocks merge in CI
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 .PHONY: verify
-verify: vet test ## Everything that must pass before pushing
+verify: vet vet-e2e cover ## Everything that must pass before pushing
 
 ## --- environment -------------------------------------------------------------
 
@@ -74,8 +99,5 @@ cluster-status: ## Show cluster and storage health
 .PHONY: e2e
 e2e: ## Run the Go e2e assertions against a running cluster
 	KUBECONFIG=$${KUBECONFIG:-$$PWD/.e2e/kubeconfig} \
+	TALOSCONFIG=$${TALOSCONFIG:-$$PWD/.e2e/talosconfig} \
 		$(GO) test -tags e2e -race -timeout $(E2E_TIMEOUT) -v ./test/e2e/...
-
-.PHONY: e2e-full
-e2e-full: cluster-up e2e ## Provision, assert, then tear down
-	$(MAKE) cluster-down

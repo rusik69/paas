@@ -87,9 +87,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
 	set -euo pipefail
 	case "${1:-check}" in
 	check) versions_check ;;
-	print) set | grep -E '^(KUBECTL|HELM|TALOS|TALOSCTL|FLUX|KUBERNETES|CILIUM|PIRAEUS|GATEWAY_API|IMAGE_FACTORY)' ;;
 	*)
-		echo "usage: $0 [check|print]" >&2
+		echo "usage: $0 check" >&2
 		exit 2
 		;;
 	esac

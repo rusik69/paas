@@ -45,9 +45,18 @@ e2e harness itself.
   these documents rather than restating them. It ships in phase 0 because an
   agent that learns the wrong conventions in phase 1 encodes them everywhere,
   and every later phase is written on top of that.
+- **GitHub Actions.** `unit` (vet, e2e-compiles, tests, coverage floor),
+  `lint` (golangci-lint, shellcheck, shfmt, actionlint), `vuln`, `tooling`,
+  a nightly `versions` check, and `e2e` on a self-hosted runner with `/dev/kvm`.
+- **`hack/deps.sh install` is proven by CI**, not by trust. The `tooling` job
+  runs it on a clean hosted runner, asserts every pinned tool is present at its
+  pinned version, then runs it a second time to prove the re-run path is a
+  no-op. Otherwise the installer is exercised once per developer, on a machine
+  nobody can reproduce, and rots unwatched.
 
 **Done when:** `hack/e2e.sh` brings up a cluster from nothing and binds a `replicated-3` PVC
-that survives killing the node holding the primary replica.
+that survives killing the node holding the primary replica — on real Talos guests, asserted
+by the suite itself, with `make cover` and every CI job green.
 
 ### Phase 1 — Platform core
 
@@ -134,13 +143,29 @@ green.
 
 | Phase | Test work delivered with it |
 |---|---|
-| 0 | `hack/e2e.sh` up/down, idempotent and aggressive about leaked libvirt domains; CI job skeleton; `make test` wired with `-race` |
+| 0 | `hack/e2e.sh` up/down, idempotent and aggressive about leaked libvirt domains; the full CI job set; `make test` wired with `-race`; `make cover` floor; `deps.sh install` proven on a clean runner; the suite asserts its own cluster is really Talos |
 | 1 | envtest harness and `setup-envtest` pinning; `Platform`/`Package` reconciler tests; chart golden-file rendering |
 | 2 | Tenant reconciler tests; **the isolation suite** — its first version ships with the isolation it tests, never after |
 | 3 | Schema-conversion unit tests and fuzz corpus; SSA drift and conflict tests; per-chart schema accept/reject tables |
 | 4 | Full e2e journey including build, routing, attachment, scale-to-zero; fixture apps in Go and Node so buildpack detection is exercised |
 | 5 | Live-migration and node-failure tests on real hardware; VM console smoke test |
 | 6 | Restore drills in CI; usage-arithmetic unit tests; scale/soak at 200 tenants |
+
+Three standing rules, from phase 0 onward:
+
+- **Coverage is comprehensive, and CI enforces a floor.** `make cover` fails below
+  `COVERAGE_MIN`, which ratchets up as phases land and is never lowered to make a red build
+  green. The floor is a backstop against carelessness, not evidence of good tests: coverage
+  measures which lines ran, never whether anything was asserted about them. Every reconciler
+  gets envtest coverage of its error and conflict paths, not only its happy path, and every
+  bug fixed gets the test that would have caught it.
+- **E2E runs on real Talos guests. Always.** Never kind, never minikube, never a mocked API
+  server. Substituting one would make the suite green while testing none of what it exists to
+  prove — the DRBD system extension, DRBD replication, unclean node loss, Cilium as the only
+  dataplane. `TestCluster_NodesAreRealTalosGuests` asserts this from inside the suite, so a
+  substituted cluster fails rather than quietly passes.
+- **Every gate is a CI job.** A check that only runs when someone remembers is not a gate. If
+  a rule in this document matters, it has a job in `.github/workflows/ci.yml`.
 
 Two rules about ordering that are easy to violate under deadline pressure:
 

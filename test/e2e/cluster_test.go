@@ -4,6 +4,8 @@ package e2e
 
 import (
 	"context"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -42,6 +44,48 @@ func TestCluster_AllNodesReady(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("%v (last client error: %q)", err, last)
+	}
+}
+
+// Pointing KUBECONFIG at kind or minikube must fail here rather than pass
+// everywhere below: none of the phase-0 assertions mean anything off Talos.
+func TestCluster_NodesAreRealTalosGuests(t *testing.T) {
+	wantVersion := pinnedVersion(t, "TALOS_VERSION")
+
+	nodes, err := clientset.CoreV1().Nodes().List(t.Context(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(nodes.Items) == 0 {
+		t.Fatal("cluster has no nodes")
+	}
+
+	for _, n := range nodes.Items {
+		os := n.Status.NodeInfo.OSImage
+		if !strings.Contains(os, "Talos") {
+			t.Errorf("node %s osImage = %q, want Talos — e2e must run on real Talos guests", n.Name, os)
+			continue
+		}
+		if !strings.Contains(os, wantVersion) {
+			t.Errorf("node %s osImage = %q, want Talos %s as pinned in hack/versions.sh",
+				n.Name, os, wantVersion)
+		}
+	}
+}
+
+// Absent, this surfaces ten minutes later as a PVC stuck in Pending with a
+// mount error that never mentions DRBD.
+func TestCluster_DRBDExtensionIsInstalled(t *testing.T) {
+	for _, n := range topology(t) {
+		out, err := exec.CommandContext(t.Context(), "talosctl",
+			"--nodes", n.IP, "get", "extensions").CombinedOutput()
+		if err != nil {
+			t.Errorf("talosctl get extensions on %s: %v\n%s", n.Domain, err, out)
+			continue
+		}
+		if !strings.Contains(string(out), "drbd") {
+			t.Errorf("node %s carries no drbd system extension:\n%s", n.Domain, out)
+		}
 	}
 }
 

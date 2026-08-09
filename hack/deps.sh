@@ -2,6 +2,11 @@
 # Provision the phase-0 toolchain on a Debian/Ubuntu developer machine.
 #
 #   hack/deps.sh check     report what is present and what is missing (no sudo)
+#   hack/deps.sh check --tools-only
+#                          as above, but skip host capabilities. CI proves the
+#                          installer works on a clean machine, and a hosted
+#                          runner has neither nested virtualisation nor a
+#                          re-logged-in shell for the new group membership.
 #   hack/deps.sh install   install everything missing (needs sudo)
 #
 # Idempotent: re-running installs nothing that is already at the pinned version.
@@ -41,6 +46,8 @@ version_of() {
 }
 
 check() {
+	local tools_only=0
+	[[ "${1:-}" == "--tools-only" ]] && tools_only=1
 	local missing=0
 	printf '%-14s %-12s %s\n' TOOL WANT STATUS
 	for t in kubectl helm talosctl flux; do
@@ -70,6 +77,10 @@ check() {
 			missing=1
 		fi
 	done
+
+	if ((tools_only)); then
+		return $missing
+	fi
 
 	# Host capabilities the e2e harness depends on.
 	local nested
@@ -160,7 +171,10 @@ enable_libvirt() {
 }
 
 case "${1:-check}" in
-check) check ;;
+check)
+	shift || true
+	check "$@"
+	;;
 install)
 	need_sudo
 	install_apt
@@ -169,7 +183,7 @@ install)
 	log "done — re-run 'hack/deps.sh check' to confirm"
 	;;
 *)
-	echo "usage: $0 [check|install]" >&2
+	echo "usage: $0 [check [--tools-only]|install]" >&2
 	exit 2
 	;;
 esac
