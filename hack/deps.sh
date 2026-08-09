@@ -50,6 +50,7 @@ version_of() {
 	helm) helm version --template '{{.Version}}' 2>/dev/null ;;
 	talosctl) talosctl version --client 2>/dev/null | awk '/Tag:/ {print $2}' ;;
 	flux) flux version --client 2>/dev/null | awk '/flux/ {print $2}' ;;
+	golangci-lint) golangci-lint version 2>/dev/null | awk '/has version/ {print $4}' ;;
 	esac
 }
 
@@ -58,13 +59,16 @@ check() {
 	[[ "${1:-}" == "--tools-only" ]] && tools_only=1
 	local missing=0
 	printf '%-14s %-12s %s\n' TOOL WANT STATUS
-	for t in kubectl helm talosctl flux; do
+	for t in kubectl helm talosctl flux golangci-lint; do
 		local want got
 		case "$t" in
 		kubectl) want="$KUBECTL_VERSION" ;;
 		helm) want="$HELM_VERSION" ;;
 		talosctl) want="$TALOSCTL_VERSION" ;;
 		flux) want="v$FLUX_VERSION" ;;
+		# GOLANGCI_VERSION is pinned with a leading v (matches the release tag);
+		# the binary reports its own version without one.
+		golangci-lint) want="${GOLANGCI_VERSION#v}" ;;
 		esac
 		got="$(version_of "$t" || true)"
 		if [[ -z "$got" ]]; then
@@ -178,6 +182,11 @@ install_tools() {
 		fetch_bin talosctl "https://github.com/siderolabs/talos/releases/download/${TALOSCTL_VERSION}/talosctl-linux-amd64"
 	[[ "$(version_of flux)" == "v$FLUX_VERSION" ]] ||
 		fetch_tgz flux "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" flux
+	local golangci_no_v="${GOLANGCI_VERSION#v}"
+	[[ "$(version_of golangci-lint)" == "$golangci_no_v" ]] ||
+		fetch_tgz golangci-lint \
+			"https://github.com/golangci/golangci-lint/releases/download/${GOLANGCI_VERSION}/golangci-lint-${golangci_no_v}-linux-amd64.tar.gz" \
+			"golangci-lint-${golangci_no_v}-linux-amd64/golangci-lint"
 }
 
 enable_libvirt() {

@@ -13,11 +13,6 @@ on:
 permissions:
   contents: read
 
-env:
-  # Keep in step with go.mod. A mismatch here surfaces as a build failure in CI
-  # only, which is the most expensive place to discover it.
-  GO_VERSION: "1.26"
-
 jobs:
   # Everything in this job must stay fast enough to run on every keystroke
   # locally. The moment it needs a cluster, the tier boundary has been violated
@@ -28,7 +23,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          # From go.mod rather than a version pinned here as well: the two drift,
+          # and the mismatch surfaces as a build failure in CI only, which is the
+          # most expensive place to discover it.
+          go-version-file: go.mod
           cache: true
 
       - name: go vet
@@ -61,17 +59,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
           cache: true
 
-      - uses: golangci/golangci-lint-action@v6
+      - name: golangci-lint pin
+        id: pins
+        # Read from hack/versions.sh, the only place a version may live. `latest`
+        # here turns an upstream release into a red build nobody caused, on a PR
+        # that changed nothing golangci-lint had an opinion about before.
+        run: |
+          source hack/versions.sh
+          echo "golangci=${GOLANGCI_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: ${{ steps.pins.outputs.golangci }}
 
       - name: shellcheck
         # -x follows sourced files, so lib.sh and versions.sh are checked in
         # the context that actually uses them.
         run: shellcheck -x hack/*.sh
+
+      - name: progress output stays off stdout
+        run: make check-stdout
 
       - name: shell formatting
         run: go run mvdan.cc/sh/v3/cmd/shfmt@latest -d -ln bash hack/*.sh
@@ -79,6 +89,21 @@ jobs:
       - name: workflow lint
         # This file is itself a deliverable and nothing else type-checks it.
         run: make actionlint
+
+  # Separate from lint because it fails for a reason nobody in the PR caused: a
+  # new advisory against a dependency turns an unrelated change red, and that is
+  # the point — the module graph is only as current as the last person who looked.
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        run: make vuln
 
   # Proves hack/deps.sh install actually works on a machine that has none of
   # the tools. Every developer runs it exactly once, on a machine nobody else
@@ -130,7 +155,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
 
       - name: runner has real virtualisation
         run: |

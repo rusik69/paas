@@ -47,14 +47,20 @@ actionlint: ## Lint the GitHub Actions workflows
 	$(GO) run github.com/rhysd/actionlint/cmd/actionlint@latest
 
 .PHONY: lint
-lint: ## golangci-lint (installed on demand into ./bin)
-	@command -v golangci-lint >/dev/null || { echo "golangci-lint not installed: see docs/go-guidelines.md"; exit 1; }
+lint: ## golangci-lint, configured by .golangci.yml
+	@command -v golangci-lint >/dev/null || { echo "golangci-lint not installed: run 'make deps-install'"; exit 1; }
 	golangci-lint run
 
 .PHONY: fmt
 fmt: ## gofumpt + shfmt
 	@command -v gofumpt >/dev/null && gofumpt -l -w . || echo "gofumpt not installed, skipping"
 	@command -v shfmt >/dev/null && shfmt -w -ln bash hack/*.sh || echo "shfmt not installed, skipping"
+
+.PHONY: check-stdout
+check-stdout: ## hack/lib.sh progress must not reach stdout, or it lands in a captured return value
+	@out=$$(bash -c 'source hack/lib.sh; log a; step b; warn c' 2>/dev/null); \
+	test -z "$$out" || { echo "hack/lib.sh wrote to stdout: $$out"; exit 1; }
+	@echo "stdout clean"
 
 .PHONY: shellcheck
 shellcheck: ## Lint the provisioning scripts
@@ -66,7 +72,7 @@ vuln: ## govulncheck — blocks merge in CI
 	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 .PHONY: verify
-verify: vet vet-e2e cover ## Everything that must pass before pushing
+verify: vet vet-e2e lint cover check-stdout ## Everything that must pass before pushing
 
 ## --- environment -------------------------------------------------------------
 
@@ -101,3 +107,8 @@ e2e: ## Run the Go e2e assertions against a running cluster
 	KUBECONFIG=$${KUBECONFIG:-$$PWD/.e2e/kubeconfig} \
 	TALOSCONFIG=$${TALOSCONFIG:-$$PWD/.e2e/talosconfig} \
 		$(GO) test -tags e2e -race -timeout $(E2E_TIMEOUT) -v ./test/e2e/...
+
+.PHONY: test-e2e
+test-e2e: ## Provision, assert, tear down — the target named in docs/testing.md
+	$(MAKE) cluster-up
+	$(MAKE) e2e; status=$$?; $(MAKE) cluster-down; exit $$status

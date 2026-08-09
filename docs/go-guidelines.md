@@ -152,6 +152,10 @@ go vet           in CI separately, non-negotiable
 govulncheck      blocks merge
 ```
 
+`.golangci.yml` is where that list is enforced — including gofumpt, so formatting fails the
+lint job rather than waiting for someone to run `make fmt`. It enables each linter explicitly
+instead of relying on golangci-lint's defaults, which change between releases.
+
 Generated code (deepcopy, CRDs, clients) is committed and CI verifies it is current:
 `make generate && git diff --exit-code`. Reviewing a PR whose generated files are stale wastes
 everyone's time.

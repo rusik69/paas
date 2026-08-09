@@ -14,6 +14,31 @@ machine:
         parameters:
           - usermode_helper=disabled
       - name: drbd_transport_tcp
+      # The replicated-* classes are LVM thin pools, and Talos loads only what
+      # is named here. Without it lvcreate --type thin-pool fails with
+      # "Required device-mapper target(s) not detected in your kernel", and
+      # LINSTOR reports the retry instead: the volume group survives the failed
+      # lvcreate, so the next attempt dies on pvcreate "without -ff" and names
+      # a device that is not the problem.
+      - name: dm-thin-pool
+  registries:
+    mirrors:
+      # containerd resolves this name to the in-cluster registry Service.
+      # Cluster DNS is not available to containerd, so the endpoint is the
+      # Service's pinned ClusterIP; Cilium's socket load balancer makes it
+      # reachable from the host namespace. Plain http, so no CA to distribute.
+      #
+      # 10.96.0.30 is also hardcoded as the Service clusterIP in
+      # hack/manifests/registry.yaml. The two cannot be unified — see the
+      # comment there — so keep them equal by hand.
+      registry.paas.io:
+        endpoints:
+          - http://10.96.0.30:5000
+        # Without this, a mirror failure falls back to the namespace host
+        # https://registry.paas.io, which has no DNS record. That surfaces as
+        # a DNS/TLS error naming a host that never existed instead of a
+        # connect failure to the mirror, which is what actually broke.
+        skipFallback: true
   kubelet:
     extraMounts:
       # LINSTOR satellite state, shared into the kubelet mount namespace.

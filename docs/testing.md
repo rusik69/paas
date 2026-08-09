@@ -270,15 +270,19 @@ domains, and reviewers should say so in review when they are not.
 
 ## Make targets
 
+A target tagged with a phase does not exist yet; it arrives with that phase.
+
 ```
 make test            # unit, -race, < 10s
-make test-integration # envtest
-make test-charts     # golden + schema
+make test-integration # envtest                                     (phase 1)
+make test-charts     # golden + schema                              (phase 1)
 make test-e2e        # provisions VMs, runs e2e suite, tears down
-make golden          # regenerate chart golden files
-make lint            # golangci-lint, helm lint, policy checks
-make fuzz            # short fuzz run against the committed corpus
+make golden          # regenerate chart golden files                (phase 1)
+make lint            # golangci-lint
+make fuzz            # short fuzz run against the committed corpus  (phase 3)
 ```
+
+Helm lint and the policy checks join `make lint` with the charts in phase 1.
 
 ## References
 

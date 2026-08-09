@@ -140,7 +140,16 @@ func namespace(t *testing.T, prefix string) string {
 	ns, err := clientset.CoreV1().Namespaces().Create(t.Context(), &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: prefix + "-",
-			Labels:       map[string]string{"paas.io/e2e": "true"},
+			Labels: map[string]string{
+				"paas.io/e2e": "true",
+				// Talos enforces the baseline Pod Security standard, which
+				// rejects hostNetwork — and a hostNetwork pod is the only way
+				// to test the path containerd itself takes to the registry
+				// ClusterIP. These namespaces exist for one test each and are
+				// deleted with it. Tenant namespaces are a phase-2 concern and
+				// are labelled by the Tenant reconciler, not here.
+				"pod-security.kubernetes.io/enforce": "privileged",
+			},
 		},
 	}, metav1.CreateOptions{})
 	if err != nil {

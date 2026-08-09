@@ -77,7 +77,7 @@ func TestCluster_NodesAreRealTalosGuests(t *testing.T) {
 func TestCluster_DRBDExtensionIsInstalled(t *testing.T) {
 	for _, n := range topology(t) {
 		out, err := exec.CommandContext(t.Context(), "talosctl",
-			"--nodes", n.IP, "get", "extensions").CombinedOutput()
+			"get", "extensions", "--nodes", n.IP).CombinedOutput()
 		if err != nil {
 			t.Errorf("talosctl get extensions on %s: %v\n%s", n.Domain, err, out)
 			continue

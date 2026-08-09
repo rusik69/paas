@@ -40,6 +40,9 @@ e2e harness itself.
   the first PVC fails and the failure mode is opaque.
 - Cilium with kube-proxy replacement and Gateway API enabled.
 - Piraeus operator, `replicated-2` and `replicated-3` StorageClasses.
+- In-cluster OCI registry (Zot) on a `replicated-3` PVC, reachable from every node
+  through a `machine.registries` mirror. Not SeaweedFS-backed: SeaweedFS arrives with
+  the `Bucket` kind in phase 3 and phase 0 must not depend on it.
 - `hack/e2e.sh` up/down, idempotent, runnable in CI.
 - `AGENTS.md` — the conventions and traps a coding agent must know, pointing at
   these documents rather than restating them. It ships in phase 0 because an
@@ -55,8 +58,9 @@ e2e harness itself.
   nobody can reproduce, and rots unwatched.
 
 **Done when:** `hack/e2e.sh` brings up a cluster from nothing and binds a `replicated-3` PVC
-that survives killing the node holding the primary replica — on real Talos guests, asserted
-by the suite itself, with `make cover` and every CI job green.
+that survives killing the node holding the primary replica, and an image pushed to the
+in-cluster registry is pullable by a node through the Talos mirror — on real Talos guests,
+asserted by the suite itself, with `make cover` and every CI job green.
 
 ### Phase 1 — Platform core
 

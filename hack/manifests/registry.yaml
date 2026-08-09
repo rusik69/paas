@@ -1,0 +1,137 @@
+# In-cluster OCI registry. Phase 1 publishes platform charts here; phase 4
+# pushes app images built from git.
+#
+# Backed by a replicated-3 PVC rather than SeaweedFS: SeaweedFS arrives with the
+# Bucket kind in phase 3, and phase 0 must not depend on it.
+#
+# Rendered by e2e.sh's install_registry via envsubst, not applied as-is:
+# ${ZOT_VERSION} and ${REGISTRY_CONFIG_HASH} are substituted first. Applying
+# this file directly leaves both as literal, unexpanded text.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: paas-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registry-config
+  namespace: paas-system
+data:
+  # "compat": ["docker2s2"] is the image's own default config.json — restored
+  # here because zot v2.1.20's UpdateManifest returns 415 MANIFEST_INVALID for
+  # application/vnd.docker.distribution.manifest.v2+json unless it is present.
+  # Dropping it only looks safe because Docker Hub now serves busybox as an OCI
+  # index; any schema2 producer, including phase 4's build-and-push path, fails.
+  #
+  # distSpecVersion is omitted deliberately: v2.1.20 compiles in 1.1.1, and
+  # pinning 1.1.0 here made zot log a mismatch and overwrite it on every start.
+  config.json: |
+    {
+      "storage": {
+        "rootDirectory": "/var/lib/registry",
+        "dedupe": false,
+        "gc": true
+      },
+      "http": {
+        "address": "0.0.0.0",
+        "port": "5000",
+        "compat": ["docker2s2"]
+      },
+      "log": {
+        "level": "info"
+      }
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: registry-data
+  namespace: paas-system
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: replicated-3
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  namespace: paas-system
+spec:
+  replicas: 1
+  # The PVC is ReadWriteOnce, so a rolling update would deadlock: the new pod
+  # cannot attach the volume until the old one releases it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: registry
+      annotations:
+        # A ConfigMap edit does not, by itself, change the pod template and so
+        # triggers no rollout. This hash does change when the file changes, so
+        # editing config.json rolls the pod; an unchanged file re-renders to
+        # the same hash, so re-running `up` stays a no-op.
+        paas.io/config-hash: "${REGISTRY_CONFIG_HASH}"
+    spec:
+      containers:
+        - name: zot
+          image: ghcr.io/project-zot/zot-linux-amd64:${ZOT_VERSION}
+          ports:
+            - name: http
+              containerPort: 5000
+          readinessProbe:
+            httpGet:
+              path: /v2/
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /v2/
+              port: http
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/zot
+            - name: data
+              mountPath: /var/lib/registry
+      volumes:
+        - name: config
+          configMap:
+            name: registry-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: registry-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  namespace: paas-system
+spec:
+  # Pinned, because containerd on each node reaches the registry by this
+  # address and the Talos machine config names it before the Service exists.
+  # An allocated ClusterIP would differ per cluster and could not be baked in.
+  #
+  # Also hardcoded in hack/talos/common.patch.yaml's registry mirror endpoint.
+  # The two cannot be unified: apply-config --mode=auto converges the Talos
+  # side on an edit, but a Service's clusterIP is immutable, so the Service
+  # apply here would be rejected. Keep them equal by hand.
+  clusterIP: 10.96.0.30
+  selector:
+    app.kubernetes.io/name: registry
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http

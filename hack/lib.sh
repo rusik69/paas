@@ -9,9 +9,13 @@ export E2E_DIR
 export KUBECONFIG="${KUBECONFIG:-${E2E_DIR}/kubeconfig}"
 export TALOSCONFIG="${TALOSCONFIG:-${E2E_DIR}/talosconfig}"
 
+# All progress output goes to stderr. Functions here return values on stdout —
+# download_iso returns a path — and a log line on the same stream is captured
+# into the value, producing errors that name a filename with an ANSI escape in
+# it rather than the mistake.
 _ts() { date -u +%H:%M:%S; }
-log() { printf '\033[1;34m[%s] ==>\033[0m %s\n' "$(_ts)" "$*"; }
-step() { printf '\033[1;32m[%s] ###\033[0m %s\n' "$(_ts)" "$*"; }
+log() { printf '\033[1;34m[%s] ==>\033[0m %s\n' "$(_ts)" "$*" >&2; }
+step() { printf '\033[1;32m[%s] ###\033[0m %s\n' "$(_ts)" "$*" >&2; }
 warn() { printf '\033[1;33m[%s] warn:\033[0m %s\n' "$(_ts)" "$*" >&2; }
 die() {
 	printf '\033[1;31m[%s] error:\033[0m %s\n' "$(_ts)" "$*" >&2
@@ -43,8 +47,11 @@ retry() {
 		if out="$("$@" 2>&1)"; then
 			[[ -n "$out" ]] && printf '%s\n' "$out"
 			return 0
+		else
+			# Captured here, not after the fi: there $? is the if statement's
+			# own status, which is 0, and every failure reports "exit 0".
+			rc=$?
 		fi
-		rc=$?
 		if ((n >= attempts)); then
 			printf '%s\n' "$out" >&2
 			die "$what: gave up after $n attempts (exit $rc)"

@@ -12,8 +12,8 @@ Built on Talos Linux, Kubernetes, Cilium, Piraeus/LINSTOR, KubeVirt, and Flux.
 
 ## Status
 
-Phase 0 — foundation. The e2e harness, Talos install flow, Cilium and
-Piraeus/DRBD are in place; no platform code yet.
+Phase 0 — foundation. The e2e harness, Talos install flow, Cilium,
+Piraeus/DRBD and the in-cluster registry are in place; no platform code yet.
 
 | Document | What it covers |
 |---|---|
@@ -36,10 +36,15 @@ make deps-install    # install it (needs sudo; log out and back in for group cha
 make versions        # confirm every pinned upstream version still resolves
 
 make test            # unit tests, race detector on, under ten seconds
+make lint            # golangci-lint and gofumpt, per .golangci.yml
+make vuln            # govulncheck over the module graph
+make verify          # vet, vet-e2e, lint, cover, check-stdout — run it before pushing
 
-make cluster-up      # three Talos guests, Cilium, Piraeus, StorageClasses
+make cluster-up      # three Talos guests, Cilium, Piraeus, StorageClasses, registry
 make e2e             # the Go assertions, including the replicated-3 failover test
 make cluster-down
+
+make test-e2e        # all three of the above in one shot
 ```
 
 `hack/e2e.sh` provisions infrastructure and asserts nothing; every assertion lives in Go

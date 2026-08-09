@@ -5,6 +5,11 @@ machine:
     kubePrism:
       enabled: true
       port: 7445
+  nodeLabels:
+    # replicated-3 needs three replicas and there are only three guests, so
+    # the control plane is a storage node too — the same reason it carries a
+    # data disk (see the NODES table in hack/e2e.sh).
+    paas.io/storage-node: "true"
 cluster:
   allowSchedulingOnControlPlanes: false
   etcd:

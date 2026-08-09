@@ -1,0 +1,86 @@
+---
+apiVersion: piraeus.io/v1
+kind: LinstorCluster
+metadata:
+  name: linstorcluster
+spec:
+  # piraeus-operator filters nodes before it ever creates a LinstorSatellite:
+  # a node with an untolerated NoSchedule taint and no pre-existing satellite
+  # is skipped outright, before the satellite-scoped toleration below could
+  # apply. Without this, the control plane's node-role.kubernetes.io/control-
+  # plane:NoSchedule taint means no satellite is ever created there, and the
+  # paas.io/storage-node label alone does nothing. It belongs on the
+  # LinstorCluster rather than the LinstorSatelliteConfiguration's podTemplate
+  # for the same reason: podTemplate only patches satellites that already
+  # exist, and its tolerations list is atomic, so it would replace the
+  # operator's own list rather than add to it. This toleration is merged into
+  # every LINSTOR component, not just the satellite, so the LINSTOR
+  # controller and CSI controller become eligible for the control-plane guest
+  # too.
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+---
+# Upstream's Talos how-to, verbatim. The satellite's default pod spec assumes a
+# systemd host with kernel sources: `/run/systemd/system` is mounted with
+# hostPath type Directory, so on Talos the kubelet fails the type check and
+# every satellite sits in Init forever, which in turn holds linstor-csi-node in
+# its wait-node-online init container. DRBD arrives as a system extension and
+# is loaded by machine.kernel.modules, so the loader and shutdown guard have
+# nothing to do here, and /etc/lvm is read-only on Talos.
+#
+# Unselective on purpose: a satellite is created on every node, storage node or
+# not, and a satellite on any node in this cluster is a satellite on Talos.
+apiVersion: piraeus.io/v1
+kind: LinstorSatelliteConfiguration
+metadata:
+  name: talos-loader-override
+spec:
+  podTemplate:
+    spec:
+      initContainers:
+        - name: drbd-shutdown-guard
+          $patch: delete
+        - name: drbd-module-loader
+          $patch: delete
+      volumes:
+        - name: run-systemd-system
+          $patch: delete
+        - name: run-drbd-shutdown-guard
+          $patch: delete
+        - name: systemd-bus-socket
+          $patch: delete
+        - name: lib-modules
+          $patch: delete
+        - name: usr-src
+          $patch: delete
+        - name: etc-lvm-backup
+          hostPath:
+            path: /var/etc/lvm/backup
+            type: DirectoryOrCreate
+        - name: etc-lvm-archive
+          hostPath:
+            path: /var/etc/lvm/archive
+            type: DirectoryOrCreate
+---
+# Thin, not thick: replicated-3 needs three copies of every volume, and a 20 GB
+# scratch disk cannot hold three thickly-provisioned 5 GB PVCs plus overhead.
+apiVersion: piraeus.io/v1
+kind: LinstorSatelliteConfiguration
+metadata:
+  name: paas-storage-pool
+spec:
+  # A plain label map, not a LabelSelector: the CRD types this as
+  # map[string]string, so a matchLabels wrapper is rejected by the apply with
+  # ".spec.nodeSelector.matchLabels: expected string".
+  nodeSelector:
+    paas.io/storage-node: "true"
+  storagePools:
+    - name: pool
+      lvmThinPool:
+        volumeGroup: vg-paas
+        thinPool: thin
+      source:
+        hostDevices:
+          - /dev/vdb

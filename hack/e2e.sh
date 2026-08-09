@@ -71,13 +71,22 @@ preflight() {
 	[[ "$nested" == Y || "$nested" == 1 ]] ||
 		warn "nested virtualisation is off — phase 0 works, phase 5 (KubeVirt) will not"
 
-	local want_mb=0 spec
-	for spec in "${NODES[@]}"; do want_mb=$((want_mb + $(node_field "$spec" memory))); done
+	# Only guests that still have to be started count. A running guest's memory
+	# is already allocated, and counting it again makes `up` fail on a host that
+	# is comfortably running the very cluster it is about to reuse.
+	local want_mb=0 spec name
+	for spec in "${NODES[@]}"; do
+		name="$(node_field "$spec" name)"
+		if [[ "$(virsh_ domstate "$name" 2>/dev/null || true)" == running ]]; then
+			continue
+		fi
+		want_mb=$((want_mb + $(node_field "$spec" memory)))
+	done
 	local avail_mb
 	avail_mb="$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)"
 	((avail_mb >= want_mb)) ||
-		die "guests need ${want_mb} MB, host has ${avail_mb} MB available — lower CP_MEMORY/WORKER_MEMORY"
-	log "memory: ${want_mb} MB requested, ${avail_mb} MB available"
+		die "guests still to start need ${want_mb} MB, host has ${avail_mb} MB available — lower CP_MEMORY/WORKER_MEMORY"
+	log "memory: ${want_mb} MB to start, ${avail_mb} MB available"
 
 	# The pool creates the qcow2 files, so they are owned by qemu and no
 	# AppArmor or home-directory permission problem can reach them. Creating
@@ -123,16 +132,17 @@ download_iso() {
 }
 
 # Into the pool so guests can read it regardless of where this repository sits.
+#
+# One exit point, and everything before it silenced: virsh prints a blank line
+# on success, and any stdout here is captured into the returned path.
 upload_iso() {
 	local iso="$1" vol
 	vol="$(basename "$iso")"
-	if virsh_ vol-info --pool "$LIBVIRT_POOL" "$vol" >/dev/null 2>&1; then
-		virsh_ vol-path --pool "$LIBVIRT_POOL" "$vol"
-		return
+	if ! virsh_ vol-info --pool "$LIBVIRT_POOL" "$vol" >/dev/null 2>&1; then
+		log "uploading $vol into libvirt pool '$LIBVIRT_POOL'"
+		virsh_ vol-create-as "$LIBVIRT_POOL" "$vol" "$(stat -c%s "$iso")" --format raw >/dev/null
+		virsh_ vol-upload --pool "$LIBVIRT_POOL" "$vol" "$iso" >/dev/null
 	fi
-	log "uploading $vol into libvirt pool '$LIBVIRT_POOL'"
-	virsh_ vol-create-as "$LIBVIRT_POOL" "$vol" "$(stat -c%s "$iso")" --format raw >/dev/null
-	virsh_ vol-upload --pool "$LIBVIRT_POOL" "$vol" "$iso"
 	virsh_ vol-path --pool "$LIBVIRT_POOL" "$vol"
 }
 
@@ -225,8 +235,19 @@ wait_maintenance() {
 	local spec ip
 	for spec in "${NODES[@]}"; do
 		ip="$(node_field "$spec" ip)"
+		# A configured node never re-enters maintenance mode, and its insecure
+		# API rejects the connection with "certificate required" — so waiting
+		# for it on a re-run is a ten-minute wait per node for something that
+		# already happened. The secure API answering is the proof it did.
+		if talosctl get machinestatus --nodes "$ip" --endpoints "$ip" >/dev/null 2>&1; then
+			log "node ${ip} is already configured"
+			continue
+		fi
+		# machinestatus, not version: the version API is unimplemented in
+		# maintenance mode, so it fails on a node that is perfectly ready.
+		# Flags come after the subcommand — talosctl rejects them before it.
 		retry 120 5 "node ${ip} maintenance mode" -- \
-			talosctl --nodes "$ip" --endpoints "$ip" --insecure version --short >/dev/null
+			talosctl get machinestatus --insecure --nodes "$ip" --endpoints "$ip" >/dev/null
 		log "node ${ip} is up"
 	done
 }
@@ -256,6 +277,12 @@ gen_configs() {
 		--config-patch-worker "@${REPO_ROOT}/hack/talos/worker.patch.yaml" \
 		--output "${E2E_DIR}/config" \
 		--force
+
+	# Put it where $TALOSCONFIG points before anything talks to a node, so no
+	# later call needs --talosconfig.
+	cp "${E2E_DIR}/config/talosconfig" "$TALOSCONFIG"
+	talosctl config endpoint "$CONTROLPLANE_IP"
+	talosctl config node "$CONTROLPLANE_IP"
 	log "installer image: ${installer}"
 }
 
@@ -267,11 +294,15 @@ apply_configs() {
 		role="$(node_field "$spec" role)"
 		name="$(node_field "$spec" name)"
 
-		# apply-config --insecure only works in maintenance mode, and re-running
-		# `up` against a live cluster must be a no-op.
-		if talosctl --talosconfig "${E2E_DIR}/config/talosconfig" \
-			--nodes "$ip" --endpoints "$ip" version --short >/dev/null 2>&1; then
-			log "node ${name} is already configured"
+		# --insecure is maintenance mode only. A configured node is converged
+		# with --mode=auto instead of skipped, so an edited patch reaches a live
+		# cluster; auto is a no-op when the config is unchanged and reboots only
+		# when the change needs it.
+		if talosctl get machinestatus --nodes "$ip" --endpoints "$ip" >/dev/null 2>&1; then
+			log "converging config on ${name} (${ip})"
+			retry 10 10 "apply-config to ${ip}" -- \
+				talosctl apply-config --mode=auto --nodes "$ip" --endpoints "$ip" \
+				--file "${E2E_DIR}/config/${role}.yaml"
 			continue
 		fi
 
@@ -280,29 +311,23 @@ apply_configs() {
 			talosctl apply-config --insecure --nodes "$ip" \
 			--file "${E2E_DIR}/config/${role}.yaml"
 	done
-
-	cp "${E2E_DIR}/config/talosconfig" "$TALOSCONFIG"
-	talosctl --talosconfig "$TALOSCONFIG" config endpoint "$CONTROLPLANE_IP"
-	talosctl --talosconfig "$TALOSCONFIG" config node "$CONTROLPLANE_IP"
 }
 
 bootstrap_etcd() {
 	step "bootstrapping etcd"
 	# Bootstrap is one-shot: a second call returns AlreadyExists, which is
 	# success here but a non-zero exit.
-	if talosctl --talosconfig "$TALOSCONFIG" --nodes "$CONTROLPLANE_IP" etcd status >/dev/null 2>&1; then
+	if talosctl etcd status --nodes "$CONTROLPLANE_IP" >/dev/null 2>&1; then
 		log "etcd is already bootstrapped"
 		return
 	fi
-	retry 60 10 "talosctl bootstrap" -- \
-		talosctl --talosconfig "$TALOSCONFIG" --nodes "$CONTROLPLANE_IP" bootstrap
+	retry 60 10 "talosctl bootstrap" -- talosctl bootstrap --nodes "$CONTROLPLANE_IP"
 }
 
 fetch_kubeconfig() {
 	step "fetching kubeconfig"
 	retry 60 10 "talosctl kubeconfig" -- \
-		talosctl --talosconfig "$TALOSCONFIG" --nodes "$CONTROLPLANE_IP" \
-		kubeconfig --force "$KUBECONFIG"
+		talosctl kubeconfig --force "$KUBECONFIG" --nodes "$CONTROLPLANE_IP"
 	retry 60 10 "kube-apiserver reachable" -- kubectl version -o json
 	log "KUBECONFIG=${KUBECONFIG}"
 }
@@ -342,14 +367,18 @@ install_piraeus() {
 	retry 30 10 "piraeus operator ready" -- kubectl wait pod --for=condition=Ready \
 		-n piraeus-datastore -l app.kubernetes.io/component=piraeus-operator --timeout=60s
 
-	kubectl apply --server-side -f - <<'EOF'
-apiVersion: piraeus.io/v1
-kind: LinstorCluster
-metadata:
-  name: linstorcluster
-spec: {}
-EOF
-	kubectl apply --server-side -f "${REPO_ROOT}/hack/manifests/piraeus-satellite.yaml"
+	# The operator's validating webhook gates both applies below. A Ready pod is
+	# not a reachable webhook: until its EndpointSlice reaches Cilium's backend
+	# map, the API server's connect() to the ClusterIP fails with EPERM, which
+	# reads as a permission problem rather than a not-yet.
+	retry 30 5 "webhook endpoint" -- kubectl wait endpointslices.discovery.k8s.io \
+		-n piraeus-datastore -l kubernetes.io/service-name=piraeus-operator-webhook-service \
+		--for=jsonpath='{.endpoints[0].conditions.ready}'=true --timeout=30s
+
+	# A file, not a heredoc: retry re-runs the command, and a heredoc's stdin is
+	# consumed by the first attempt, so every retry would apply nothing.
+	retry 30 5 "linstor cluster and satellites" -- kubectl apply --server-side \
+		-f "${REPO_ROOT}/hack/manifests/piraeus.yaml"
 
 	step "waiting for LINSTOR satellites"
 	retry 60 10 "linstor satellites ready" -- kubectl wait pod \
@@ -364,11 +393,33 @@ EOF
 	retry 60 10 "linstor storage pools" -- bash -c '
 		pod=$(kubectl get pods -n piraeus-datastore -l app.kubernetes.io/component=linstor-controller -o name | head -1)
 		test -n "$pod" || exit 1
-		kubectl exec -n piraeus-datastore "$pod" -- linstor --no-color storage-pool list |
-			grep -c " pool " | grep -qE "^[3-9]"'
+		count=$(kubectl exec -n piraeus-datastore "$pod" -- linstor --no-color storage-pool list |
+			grep -c " pool ")
+		test "$count" -eq "$1"' _ "${#NODES[@]}"
 
 	kubectl apply --server-side -f "${REPO_ROOT}/hack/manifests/storageclasses.yaml"
 	kubectl get storageclass | indent
+}
+
+install_registry() {
+	step "installing the in-cluster registry"
+	# Rendered to a file, not piped: retry re-runs the command, and a pipe into
+	# `kubectl apply -f -` would apply nothing on any attempt after the first,
+	# same as the piraeus.yaml apply above.
+	local rendered="${E2E_DIR}/config/registry.yaml"
+	local hash
+	hash="$(sha256sum "${REPO_ROOT}/hack/manifests/registry.yaml" | cut -d' ' -f1)"
+	ZOT_VERSION="$ZOT_VERSION" REGISTRY_CONFIG_HASH="$hash" \
+		envsubst <"${REPO_ROOT}/hack/manifests/registry.yaml" >"$rendered"
+	retry 5 5 "registry manifest" -- kubectl apply --server-side -f "$rendered"
+	# The first consumer of replicated-3 in the cluster, so this waits on volume
+	# provisioning as much as on the registry itself.
+	retry 60 10 "registry ready" -- kubectl rollout status deploy/registry \
+		-n paas-system --timeout=60s
+	# The Service's clusterIP has to equal the mirror endpoint in
+	# hack/talos/common.patch.yaml, and the claim is the first replicated-3
+	# volume in the cluster. Both are worth seeing without a second command.
+	kubectl get -n paas-system deploy/registry svc/registry pvc/registry-data | indent
 }
 
 cmd_up() {
@@ -379,6 +430,10 @@ cmd_up() {
 	id="$(factory_schematic_id)"
 	log "schematic ${id}"
 	iso_path="$(upload_iso "$(download_iso "$id")")"
+	# Stray stdout from a helper lands in its return value, and virt-install
+	# then reports a missing directory rather than the actual mistake.
+	[[ "$iso_path" == /* && "$iso_path" != *$'\n'* ]] ||
+		die "ISO path is not a single absolute path: $(printf '%q' "$iso_path")"
 
 	create_network
 	local spec
@@ -392,6 +447,7 @@ cmd_up() {
 	wait_nodes_registered
 	install_cilium
 	install_piraeus
+	install_registry
 
 	step "cluster up in $((SECONDS - started))s"
 	echo
@@ -464,6 +520,9 @@ cmd_status() {
 		kubectl exec -n piraeus-datastore "$ctrl" -- linstor --no-color storage-pool list 2>&1 | indent || true
 		kubectl exec -n piraeus-datastore "$ctrl" -- linstor --no-color resource list 2>&1 | indent || true
 	fi
+	echo
+	echo "== registry =="
+	kubectl get -n paas-system deploy/registry svc/registry pvc/registry-data pods 2>&1 | indent || true
 }
 
 # Read by the Go suite instead of duplicating the node table.

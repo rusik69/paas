@@ -13,6 +13,14 @@ kubeProxyReplacement: true
 k8sServiceHost: localhost
 k8sServicePort: 7445 # Talos KubePrism
 
+# A no-op today: Cilium 1.18's NewKPRConfig forces this on whenever
+# kubeProxyReplacement is true. Set explicitly because socket LB in the host
+# namespace is exactly what lets containerd reach the in-cluster registry's
+# ClusterIP (hack/manifests/registry.yaml), and the rendered cilium-config
+# ConfigMap otherwise reads bpf-lb-sock: "false", which claims the opposite.
+socketLB:
+  enabled: true
+
 # Talos mounts cgroup2 itself and its root filesystem is read-only, so Cilium's
 # automount init container cannot do its usual work.
 cgroup:

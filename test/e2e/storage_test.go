@@ -78,8 +78,10 @@ func TestStorage_Replicated3SurvivesLossOfPrimaryNode(t *testing.T) {
 
 	// restartPolicy Never plus `sha256sum -c` makes Succeeded a checksum match
 	// and Failed corruption, rather than a generic "pod is unhappy".
-	reader := podSpec("reader", "replicated", []string{"sh", "-c",
-		fmt.Sprintf("cd / && sha256sum -c %s", checksumPath)})
+	reader := podSpec("reader", "replicated", []string{
+		"sh", "-c",
+		fmt.Sprintf("cd / && sha256sum -c %s", checksumPath),
+	})
 	reader.Spec.RestartPolicy = corev1.RestartPolicyNever
 	createPod(t, ns, reader)
 

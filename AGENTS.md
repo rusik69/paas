@@ -26,11 +26,13 @@ surrounding code alone — several of them are deliberate and unusual.
 ## Commands
 
 ```sh
-make verify        # vet + vet-e2e + cover. Run before every commit
+make verify        # vet + vet-e2e + lint + cover + check-stdout. Before every commit
 make test          # unit tests, -race. Must stay under ten seconds
 make cover         # tests plus the coverage floor (COVERAGE_MIN)
 make vet-e2e       # the e2e suite is invisible to `make test`; check it compiles
+make lint          # golangci-lint, gofumpt included; needs `make deps-install` first
 make actionlint    # the CI workflows are a deliverable and nothing else checks them
+make vuln          # govulncheck blocks the merge; cheaper to learn that here
 
 make deps          # report missing tooling
 make versions      # confirm every pinned upstream version still resolves
@@ -38,7 +40,27 @@ make versions      # confirm every pinned upstream version still resolves
 make cluster-up    # three Talos guests on KVM, ~15 min cold
 make e2e           # Go assertions against a running cluster
 make cluster-down  # always run this; a leaked guest holds gigabytes of RAM
+make test-e2e      # all three in one shot; tears down even when the assertions fail
 ```
+
+## Subagents
+
+Defined in [.claude/agents/](.claude/agents/). They inherit this file automatically, so each
+definition adds only what is specific to its role.
+
+| Agent | Does | Cannot |
+|---|---|---|
+| `gate-runner` | Runs every local gate, reports only failures | Edit anything; touch a cluster |
+| `e2e-author` | Go assertions under `test/e2e` | Touch `hack/`; run the suite |
+| `go-reviewer` | Audits a Go diff against go-guidelines | Write — it has no shell |
+| `provisioner` | Edits `hack/`; explicit invocation only | Assert in bash; run `virsh` or `hack/e2e.sh up`/`down` |
+
+Order of increasing cost: `gate-runner` and `go-reviewer` before a commit, `/code-review`
+before a push, `make e2e` in the merge queue. A green `gate-runner` is not a merge signal —
+it runs the cheap local subset, never the e2e job.
+
+Cluster lifecycle stays manual. `make cluster-up` is a singleton over three libvirt guests;
+two agents driving it would fight over the same machines.
 
 ## Non-negotiables
 

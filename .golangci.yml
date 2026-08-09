@@ -1,0 +1,25 @@
+# The linter set is specified in docs/go-guidelines.md §Tooling. Enabled
+# explicitly rather than by golangci-lint's defaults, so a release that changes
+# what "default" means cannot quietly drop one of them.
+version: "2"
+
+run:
+  # test/e2e is behind //go:build e2e and therefore invisible to an untagged
+  # run, which is the same reason `make vet-e2e` exists.
+  build-tags:
+    - e2e
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck
+
+formatters:
+  enable:
+    - gofumpt
