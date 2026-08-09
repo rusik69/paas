@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -T git@github.com)",
+      "Bash(echo \"---exit: $?\")",
+      "Bash(git ls-remote *)",
+      "Read(//home/rusik/.ssh/**)",
+      "Bash(command -v git ssh-keyscan)",
+      "Read(//usr/bin/**)"
+    ]
+  }
+}
