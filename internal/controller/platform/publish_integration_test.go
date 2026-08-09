@@ -36,7 +36,7 @@ func TestPublishScriptOutputIsFetchable(t *testing.T) {
 	// The charts the release names must be pullable from where publish.sh put
 	// them, or the HelmReleases resolve to nothing.
 	for _, e := range got.Packages {
-		ref := registry + "/charts/" + e.Chart
+		ref := registry + "/" + e.Chart
 		out, err := exec.CommandContext(t.Context(), "helm", "show", "chart",
 			ref, "--version", e.Version, "--plain-http").CombinedOutput()
 		if err != nil {

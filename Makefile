@@ -197,6 +197,10 @@ cluster-down: ## Destroy the cluster and every libvirt resource it created
 cluster-status: ## Show cluster and storage health
 	hack/e2e.sh status
 
+.PHONY: operator-up
+operator-up: ## Build, push and deploy the operator, and publish the e2e releases
+	hack/operator.sh all
+
 .PHONY: e2e
 e2e: ## Run the Go e2e assertions against a running cluster
 	KUBECONFIG=$${KUBECONFIG:-$$PWD/.e2e/kubeconfig} \
@@ -206,4 +210,5 @@ e2e: ## Run the Go e2e assertions against a running cluster
 .PHONY: test-e2e
 test-e2e: ## Provision, assert, tear down — the target named in docs/testing.md
 	$(MAKE) cluster-up
+	$(MAKE) operator-up
 	$(MAKE) e2e; status=$$?; $(MAKE) cluster-down; exit $$status

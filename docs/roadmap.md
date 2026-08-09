@@ -84,7 +84,10 @@ asserted by the suite itself, with `make cover` and every CI job green.
   with the operator's own fetcher.)*
 
 **Done when:** changing the version field on one `Platform` CR rolls out a complete platform
-version, and rolling it back works.
+version, and rolling it back works. *(Met: `TestPlatform_VersionChangeRollsOutAndRollsBack`
+drives v0.1.0 → v0.2.0 → v0.1.0 against the operator running in the Talos cluster, asserting
+the component's rendered output changes, that a package dropped by the upgrade is removed, and
+that rolling back restores it.)*
 
 ### Phase 2 — Tenancy
 

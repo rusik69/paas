@@ -85,7 +85,14 @@ func TestStorage_Replicated3SurvivesLossOfPrimaryNode(t *testing.T) {
 	reader.Spec.RestartPolicy = corev1.RestartPolicyNever
 	createPod(t, ns, reader)
 
-	phase, err := waitPodTerminated(t, ns, "reader", 10*time.Minute)
+	// Fifteen minutes, because what this asserts is that the data survived, not
+	// that failover was quick. After a node is destroyed the CSI attach retries
+	// on the kubelet's backoff, and cluster DNS churns while Cilium re-resolves
+	// identities — observed here as ControllerPublishVolume failing to look up
+	// linstor-controller for several minutes. Ten was enough on an idle cluster
+	// and marginal on a busy one; failover latency deserves its own assertion
+	// with its own budget rather than being smuggled into this one.
+	phase, err := waitPodTerminated(t, ns, "reader", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("reader pod did not terminate: %v", err)
 	}

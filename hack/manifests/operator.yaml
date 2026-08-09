@@ -1,0 +1,81 @@
+# The operator, running in-cluster.
+#
+# In-cluster rather than out: its fetcher pulls the release artifact from the
+# same registry Flux pulls charts from, and Platform.spec.registry is one value
+# used by both. Only a process inside the cluster can resolve that name.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: paas-operator
+  namespace: paas-system
+---
+# Broad on purpose and only for now. The operator installs CRDs, bootstraps
+# Flux, and writes objects in namespaces it creates, which is close to
+# cluster-admin however it is written. Narrowing it is phase 2 work, alongside
+# the tenancy model that says what "narrow" should mean.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: paas-operator
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+  - nonResourceURLs: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: paas-operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: paas-operator
+subjects:
+  - kind: ServiceAccount
+    name: paas-operator
+    namespace: paas-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paas-operator
+  namespace: paas-system
+  labels:
+    app: paas-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: paas-operator
+  template:
+    metadata:
+      labels:
+        app: paas-operator
+    spec:
+      serviceAccountName: paas-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: operator
+          image: ${OPERATOR_IMAGE}
+          args:
+            - --metrics-bind-address=0
+            - --insecure-registry=true
+          # The image is one static binary and nothing else, so it needs no
+          # privileges at all. Stated rather than left default, because the
+          # restricted Pod Security standard is what tenant namespaces will
+          # enforce in phase 2 and the operator should already satisfy it.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi

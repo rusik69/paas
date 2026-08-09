@@ -13,6 +13,9 @@ source "${HERE}/lib.sh"
 source "${HERE}/versions.sh"
 
 PACKAGES_DIR="${PACKAGES_DIR:-$(dirname "$HERE")/packages}"
+# Which manifest is published. Overridable so a caller can cut a release from a
+# variant without editing the repository's own.
+PACKAGES_MANIFEST="${PACKAGES_MANIFEST:-${PACKAGES_DIR}/packages.yaml}"
 # Where the cluster pulls from. The in-cluster registry's ClusterIP is not
 # reachable from here, so publishing goes through a port-forward or a host
 # alias; both resolve to the same repository path the Platform names.
@@ -32,9 +35,11 @@ scratch_dir() {
 	printf '%s' "$dir"
 }
 
-# Charts are pushed under <registry>/charts so the release artifact and the
-# charts cannot collide on a tag.
-chart_repo() { printf '%s/charts' "${REGISTRY%/}"; }
+# Charts go directly under the registry, because that is where helm-controller
+# looks: a HelmRepository whose url is <registry> resolves chart "hello" to
+# <registry>/hello. They cannot collide with the release artifact, which is a
+# tag on <registry> itself rather than a repository beneath it.
+chart_repo() { printf '%s' "${REGISTRY%/}"; }
 
 cmd_charts() {
 	require_tools helm
@@ -61,13 +66,13 @@ cmd_release() {
 	local version="${1:-}"
 	[[ -n "$version" ]] || die "usage: $0 release <version>"
 
-	[[ -f "${PACKAGES_DIR}/packages.yaml" ]] ||
-		die "${PACKAGES_DIR}/packages.yaml is missing; there is nothing to release"
+	[[ -f "$PACKAGES_MANIFEST" ]] ||
+		die "${PACKAGES_MANIFEST} is missing; there is nothing to release"
 
 	step "publishing release ${version}"
 	local scratch
 	scratch="$(scratch_dir release)"
-	cp "${PACKAGES_DIR}/packages.yaml" "${scratch}/packages.yaml"
+	cp "$PACKAGES_MANIFEST" "${scratch}/packages.yaml"
 
 	# --revision is required by flux and is recorded in the artifact's
 	# annotations; it is not read by anything here.
