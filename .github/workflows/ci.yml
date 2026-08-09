@@ -55,9 +55,12 @@ jobs:
           if-no-files-found: warn
 
       - name: generated files are current
+        # A generated file that disagrees with its source is a build that lies
+        # about what it contains.
         run: |
           go mod tidy
-          git diff --exit-code -- go.mod go.sum
+          make generate
+          git diff --exit-code
 
   lint:
     runs-on: ubuntu-latest
