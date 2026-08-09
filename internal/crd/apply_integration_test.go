@@ -11,12 +11,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-func applyAll(t *testing.T) {
+func installCRDs(t *testing.T) {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
 	defer cancel()
-	if err := Apply(ctx, k8sClient); err != nil {
+	if _, err := Apply(ctx, k8sClient); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 }
@@ -32,7 +32,7 @@ func getCRD(t *testing.T, name string) *apiextensionsv1.CustomResourceDefinition
 }
 
 func TestApply_InstallsAndEstablishesEveryCRD(t *testing.T) {
-	applyAll(t)
+	installCRDs(t)
 
 	want, err := Load()
 	if err != nil {
@@ -54,10 +54,10 @@ func TestApply_InstallsAndEstablishesEveryCRD(t *testing.T) {
 
 // The level-triggered claim, tested rather than asserted.
 func TestApply_IsIdempotent(t *testing.T) {
-	applyAll(t)
+	installCRDs(t)
 	before := getCRD(t, "platforms.platform.paas.io")
 
-	applyAll(t)
+	installCRDs(t)
 	after := getCRD(t, "platforms.platform.paas.io")
 
 	if before.Generation != after.Generation {
@@ -69,7 +69,7 @@ func TestApply_IsIdempotent(t *testing.T) {
 // next apply a conflict, and without ForceOwnership that conflict is one the
 // operator can never resolve on its own — it would wedge here for good.
 func TestApply_RestoresDriftInFieldsItOwns(t *testing.T) {
-	applyAll(t)
+	installCRDs(t)
 
 	const name = "platforms.platform.paas.io"
 	want := len(getCRD(t, name).Spec.Versions[0].AdditionalPrinterColumns)
@@ -86,7 +86,7 @@ func TestApply_RestoresDriftInFieldsItOwns(t *testing.T) {
 		t.Fatalf("the edit did not take: %d columns remain", got)
 	}
 
-	applyAll(t)
+	installCRDs(t)
 
 	if got := len(getCRD(t, name).Spec.Versions[0].AdditionalPrinterColumns); got != want {
 		t.Errorf("printer columns = %d after re-apply, want %d — drift was not corrected", got, want)
@@ -98,7 +98,7 @@ func TestApply_RestoresDriftInFieldsItOwns(t *testing.T) {
 // test because the obvious reading of "the operator owns these CRDs" is that
 // apply is a replace, and someone will otherwise file the difference as a bug.
 func TestApply_LeavesFieldsItDoesNotSpecify(t *testing.T) {
-	applyAll(t)
+	installCRDs(t)
 
 	const name = "platforms.platform.paas.io"
 	drifted := getCRD(t, name)
@@ -107,7 +107,7 @@ func TestApply_LeavesFieldsItDoesNotSpecify(t *testing.T) {
 		t.Fatalf("add a shortName the manifest does not set: %v", err)
 	}
 
-	applyAll(t)
+	installCRDs(t)
 
 	var found bool
 	for _, s := range getCRD(t, name).Spec.Names.ShortNames {

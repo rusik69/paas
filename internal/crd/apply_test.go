@@ -10,6 +10,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -40,7 +41,7 @@ func TestApply_ReportsWhichCRDFailed(t *testing.T) {
 			},
 		}).Build()
 
-	err := Apply(t.Context(), c)
+	_, err := Apply(t.Context(), c)
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the client error", err)
 	}
@@ -194,7 +195,26 @@ func TestApply_FailsWhenACRDNeverEstablishes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 
-	if err := Apply(ctx, c); err == nil {
+	if _, err := Apply(ctx, c); err == nil {
 		t.Error("a CRD that never established was reported as installed")
+	}
+}
+
+// A rest.Config the client cannot be built from at all, which is a different
+// failure from an apiserver that is merely unreachable: nothing is dialled.
+func TestInstall_ReportsAnUnusableConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := &rest.Config{
+		Host:            "https://127.0.0.1:6443",
+		TLSClientConfig: rest.TLSClientConfig{CAFile: "/nonexistent/ca.crt"},
+	}
+
+	_, err := Install(t.Context(), cfg, time.Second)
+	if err == nil {
+		t.Fatal("an unusable rest.Config was reported as a successful install")
+	}
+	if !strings.Contains(err.Error(), "build client") {
+		t.Errorf("err = %q, want it to name the step that failed", err)
 	}
 }

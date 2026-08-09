@@ -25,7 +25,7 @@ func pkg(name string, stage v1alpha1.PackageStage) *v1alpha1.Package {
 }
 
 func TestPackage_AcceptsBothStages(t *testing.T) {
-	applyAll(t)
+	installCRDs(t)
 
 	for _, stage := range []v1alpha1.PackageStage{v1alpha1.StageMigration, v1alpha1.StageComponent} {
 		t.Run(string(stage), func(t *testing.T) {
@@ -43,7 +43,7 @@ func TestPackage_AcceptsBothStages(t *testing.T) {
 }
 
 func TestPackage_RejectsAnUnknownStage(t *testing.T) {
-	applyAll(t)
+	installCRDs(t)
 
 	err := k8sClient.Create(t.Context(), pkg("cilium-bogus", v1alpha1.PackageStage("bogus")))
 	if err == nil {
@@ -58,7 +58,7 @@ func TestPackage_RejectsAnUnknownStage(t *testing.T) {
 // not have to restate it, and a default that silently stops applying is the
 // kind of thing nothing notices until polling stops.
 func TestPackageSource_DefaultsTheInterval(t *testing.T) {
-	applyAll(t)
+	installCRDs(t)
 
 	src := &v1alpha1.PackageSource{
 		ObjectMeta: metav1.ObjectMeta{Name: "platform"},
@@ -79,7 +79,7 @@ func TestPackageSource_DefaultsTheInterval(t *testing.T) {
 }
 
 func TestPackageSource_RejectsANonOCIURL(t *testing.T) {
-	applyAll(t)
+	installCRDs(t)
 
 	src := &v1alpha1.PackageSource{
 		ObjectMeta: metav1.ObjectMeta{Name: "bad"},

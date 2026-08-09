@@ -262,11 +262,20 @@ artifacts costs a full re-run to diagnose.
 
 ## Coverage
 
-Coverage is a signal, not a target. Track it per package and review drops; do not gate merges
-on a global percentage, which reliably produces tests written for the number rather than for
-the bug. The packages that matter — `internal/dynamic` (schema conversion), `pkg/tenancy`
-(inheritance resolution), and the usage rollup code — should be near-exhaustive on their input
-domains, and reviewers should say so in review when they are not.
+Coverage is a signal, not a target. Do not gate merges on a *global* percentage, which
+reliably produces tests written for the number rather than for the bug: a global floor is
+satisfied by covering whatever happens to be cheapest.
+
+`make cover` therefore gates a per-package floor, applied to the packages named in
+`COVERED_PACKAGES` in the Makefile. Those are the ones that must be near-exhaustive on their
+input domains — today `internal/crd` and `pkg/wait`, and as they arrive `internal/dynamic`
+(schema conversion), `pkg/tenancy` (inheritance resolution), and the usage rollup code. Add a
+package to the list when it becomes load-bearing. Everything else is reviewed rather than
+gated, and reviewers should say so when a package's tests are thin.
+
+Two exclusions from the profile: generated deepcopy, which is mechanical and large enough to
+dominate the number in either direction, and `cmd/`, which is flag wiring by construction —
+measuring it would reward moving logic up into `main()`.
 
 ## Make targets
 

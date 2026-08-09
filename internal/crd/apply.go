@@ -8,23 +8,39 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/rusik69/paas/pkg/wait"
 )
 
-// Apply installs every embedded CRD and waits for each to become Established.
+// One group registered once into a fresh scheme, which cannot fail. Building it
+// here makes that structural rather than an error branch no test can reach.
+var installScheme = func() *runtime.Scheme {
+	s := runtime.NewScheme()
+	utilruntime.Must(apiextensionsv1.AddToScheme(s))
+	return s
+}()
+
+// Apply installs every embedded CRD and waits for each to become Established,
+// returning how many were installed.
 //
 // It is level-triggered: run against an up-to-date cluster it changes nothing.
 // Ownership is forced, because the operator owns these objects completely and a
 // conflict it cannot resolve would wedge it for good.
-func Apply(ctx context.Context, c client.Client) error {
+func Apply(ctx context.Context, c client.Client) (int, error) {
 	crds, err := Load()
 	if err != nil {
-		return err
+		return 0, err
 	}
+	if err := applyAll(ctx, c, crds); err != nil {
+		return 0, err
+	}
+	return len(crds), nil
+}
 
+func applyAll(ctx context.Context, c client.Client, crds []*apiextensionsv1.CustomResourceDefinition) error {
 	for _, crd := range crds {
 		obj := crd.DeepCopy()
 		obj.SetGroupVersionKind(apiextensionsv1.SchemeGroupVersion.WithKind("CustomResourceDefinition"))
@@ -73,12 +89,7 @@ func waitEstablished(ctx context.Context, c client.Client, name string) error {
 // It exists so cmd/paas-operator stays flag wiring and nothing else, which is
 // what keeps the logic here reachable from a test.
 func Install(ctx context.Context, cfg *rest.Config, timeout time.Duration) (int, error) {
-	scheme := runtime.NewScheme()
-	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
-		return 0, fmt.Errorf("build scheme: %w", err)
-	}
-
-	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	c, err := client.New(cfg, client.Options{Scheme: installScheme})
 	if err != nil {
 		return 0, fmt.Errorf("build client: %w", err)
 	}
@@ -86,13 +97,9 @@ func Install(ctx context.Context, cfg *rest.Config, timeout time.Duration) (int,
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	if err := Apply(ctx, c); err != nil {
+	n, err := Apply(ctx, c)
+	if err != nil {
 		return 0, fmt.Errorf("install CRDs: %w", err)
 	}
-
-	crds, err := Load()
-	if err != nil {
-		return 0, err
-	}
-	return len(crds), nil
+	return n, nil
 }

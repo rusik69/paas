@@ -11,13 +11,17 @@ INTEGRATION_TIMEOUT ?= 10m
 # surface the reconcilers will meet in production.
 ENVTEST_K8S_VERSION ?= 1.34.x
 
-# Statement coverage floor across the unit and envtest tiers, enforced in CI.
+# The floor applies per package, to the packages named here, not to a global
+# percentage. A global number is satisfied by covering whatever is cheapest,
+# which is how you get tests written for the number rather than for the bug
+# (testing.md says so directly). Naming the packages says which code has to be
+# near-exhaustive and leaves the rest to review.
 #
-# A ratchet, not a target: raise it when a phase lands with more coverage, never
-# lower it to make a red build green. Coverage measures which lines ran, not
-# whether anything was asserted about them, so it is a floor under carelessness
-# and not evidence that the tests are good.
+# Add a package here when it becomes load-bearing. Raise the floor when a phase
+# lands above it; never lower it to make a red build green.
+COVERED_PACKAGES ?= internal/crd pkg/wait
 COVERAGE_MIN ?= 95
+MODULE := github.com/rusik69/paas
 
 # hack/versions.sh is the only place a version may live, so read the go-run tool
 # pins back out of it. Lazy `=`, so a target that needs none spawns no shell.
@@ -51,10 +55,22 @@ cover: ## Coverage across both test tiers, failing below COVERAGE_MIN
 		-coverprofile=coverage.out -covermode=atomic ./...
 	@grep -vE '/zz_generated\.|/cmd/' coverage.out >coverage.filtered && mv coverage.filtered coverage.out
 	@$(GO) tool cover -func=coverage.out | tail -1
-	@total=$$($(GO) tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$$3); print $$3}'); \
-	awk -v got="$$total" -v min=$(COVERAGE_MIN) 'BEGIN { \
-		if (got+0 < min+0) { printf "coverage %.1f%% is below the %s%% floor\n", got, min; exit 1 } \
-		printf "coverage %.1f%% (floor %s%%)\n", got, min }'
+	@awk -v pkgs="$(COVERED_PACKAGES)" -v module="$(MODULE)" -v min=$(COVERAGE_MIN) ' \
+	NR > 1 { \
+		file = $$1; sub(/:.*/, "", file); sub(/\/[^\/]*$$/, "", file); \
+		total[file] += $$2; if ($$3 > 0) covered[file] += $$2 \
+	} \
+	END { \
+		n = split(pkgs, want, " "); rc = 0; \
+		for (i = 1; i <= n; i++) { \
+			p = module "/" want[i]; \
+			if (!(p in total)) { printf "no coverage data for %s\n", want[i]; rc = 1; continue } \
+			pct = 100 * covered[p] / total[p]; \
+			if (pct + 0 < min + 0) { printf "%-16s %.1f%% is below the %s%% floor\n", want[i], pct, min; rc = 1 } \
+			else { printf "%-16s %.1f%% (floor %s%%)\n", want[i], pct, min } \
+		} \
+		exit rc \
+	}' coverage.out
 
 .PHONY: vet
 vet: ## go vet — separate from lint, non-negotiable in CI

@@ -180,9 +180,10 @@ green.
 
 Three standing rules, from phase 0 onward:
 
-- **Coverage is comprehensive, and CI enforces a floor.** `make cover` fails below
-  `COVERAGE_MIN`, which ratchets up as phases land and is never lowered to make a red build
-  green. The floor is a backstop against carelessness, not evidence of good tests: coverage
+- **Coverage is comprehensive, and CI enforces a per-package floor.** `make cover` fails when
+  a package named in `COVERED_PACKAGES` is below `COVERAGE_MIN`, which ratchets up as phases
+  land and is never lowered to make a red build green. Per package rather than global,
+  because a global number is satisfied by covering whatever is cheapest. The floor is a backstop against carelessness, not evidence of good tests: coverage
   measures which lines ran, never whether anything was asserted about them. Every reconciler
   gets envtest coverage of its error and conflict paths, not only its happy path, and every
   bug fixed gets the test that would have caught it.

@@ -25,7 +25,7 @@ func platform(name, registry string) *v1alpha1.Platform {
 const ociRegistry = "oci://registry.paas.io/paas"
 
 func TestPlatform_AcceptsTheSingletonName(t *testing.T) {
-	applyAll(t)
+	installCRDs(t)
 
 	p := platform("cluster", ociRegistry)
 	if err := k8sClient.Create(t.Context(), p); err != nil {
@@ -41,7 +41,7 @@ func TestPlatform_AcceptsTheSingletonName(t *testing.T) {
 // Asserts the specific denial. A test that accepts any error keeps passing
 // after the rule it guards is deleted.
 func TestPlatform_RejectsAnyOtherName(t *testing.T) {
-	applyAll(t)
+	installCRDs(t)
 
 	err := k8sClient.Create(t.Context(), platform("notcluster", ociRegistry))
 	if err == nil {
@@ -53,7 +53,7 @@ func TestPlatform_RejectsAnyOtherName(t *testing.T) {
 }
 
 func TestPlatform_RejectsARegistryThatIsNotOCI(t *testing.T) {
-	applyAll(t)
+	installCRDs(t)
 
 	err := k8sClient.Create(t.Context(), platform("cluster", "https://registry.paas.io/paas"))
 	if err == nil {
@@ -65,7 +65,7 @@ func TestPlatform_RejectsARegistryThatIsNotOCI(t *testing.T) {
 }
 
 func TestPlatform_RejectsAnEmptyVersion(t *testing.T) {
-	applyAll(t)
+	installCRDs(t)
 
 	p := platform("cluster", ociRegistry)
 	p.Spec.Version = ""

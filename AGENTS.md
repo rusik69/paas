@@ -91,10 +91,16 @@ linter, which is why they are listed here.
 8. **E2E runs on real Talos guests. Always.** Never kind, never minikube, never
    a mocked API server. A substitute makes the suite green while testing none of
    what it exists to prove. `TestCluster_NodesAreRealTalosGuests` enforces this.
-9. **Coverage is comprehensive and `make cover` gates it.** Cover error and
-   conflict paths, not only the happy one; every bug fixed gets the test that
-   would have caught it. Raise `COVERAGE_MIN` when a phase lands above it, never
-   lower it to make a build green.
+9. **Coverage is comprehensive and `make cover` gates it, per package.** The
+   floor applies to the packages named in `COVERED_PACKAGES`, not to a global
+   percentage — a global number is satisfied by covering whatever is cheapest,
+   which produces tests written for the number rather than for the bug. Cover
+   error and conflict paths, not only the happy one; every bug fixed gets the
+   test that would have caught it. Add a package to the list when it becomes
+   load-bearing, raise `COVERAGE_MIN` when a phase lands above it, and never
+   lower either to make a build green. When a branch cannot be reached by any
+   test, delete it or restructure until it can — an unreachable error path is
+   not covered by being excused.
 10. **Every gate is a CI job.** A check that runs only when someone remembers is
     not a gate. Adding a rule means adding a job in
     [.github/workflows/ci.yml](.github/workflows/ci.yml).
