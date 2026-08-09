@@ -69,7 +69,9 @@ jobs:
           version: latest
 
       - name: shellcheck
-        run: shellcheck hack/*.sh
+        # -x follows sourced files, so lib.sh and versions.sh are checked in
+        # the context that actually uses them.
+        run: shellcheck -x hack/*.sh
 
       - name: shell formatting
         run: go run mvdan.cc/sh/v3/cmd/shfmt@latest -d -ln bash hack/*.sh

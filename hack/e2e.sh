@@ -13,6 +13,7 @@
 # provisions, Go asserts (architecture.md §11).
 set -euo pipefail
 
+# shellcheck source=hack/lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=hack/versions.sh
 source "${REPO_ROOT}/hack/versions.sh"
@@ -359,6 +360,7 @@ EOF
 	# a PVC before it appears fails with a scheduling error that blames the CSI
 	# driver rather than the pool.
 	step "waiting for storage pools on every node"
+	# shellcheck disable=SC2016 # must expand in the inner shell, on each retry
 	retry 60 10 "linstor storage pools" -- bash -c '
 		pod=$(kubectl get pods -n piraeus-datastore -l app.kubernetes.io/component=linstor-controller -o name | head -1)
 		test -n "$pod" || exit 1

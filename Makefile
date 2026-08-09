@@ -59,7 +59,7 @@ fmt: ## gofumpt + shfmt
 .PHONY: shellcheck
 shellcheck: ## Lint the provisioning scripts
 	@command -v shellcheck >/dev/null || { echo "shellcheck not installed"; exit 1; }
-	shellcheck hack/*.sh
+	shellcheck -x hack/*.sh
 
 .PHONY: vuln
 vuln: ## govulncheck — blocks merge in CI

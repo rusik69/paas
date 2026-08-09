@@ -37,6 +37,12 @@ die() {
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+in_group_on_disk() { getent group "$1" | cut -d: -f4 | tr ',' '\n' | grep -qx "$USER"; }
+
+# dpkg -s succeeds for a package that was removed but not purged, so it reports
+# config-files state as installed and apt-get is never called.
+installed_pkg() { [[ "$(dpkg-query -W -f='${db:Status-Status}' "$1" 2>/dev/null)" == installed ]]; }
+
 # version_of <tool> — best-effort installed version, empty if absent.
 version_of() {
 	case "$1" in
@@ -93,12 +99,20 @@ check() {
 		missing=1
 	}
 
-	if id -nG | tr ' ' '\n' | grep -qx libvirt; then
-		printf '%-14s %-12s ok\n' libvirt-group -
-	else
-		printf '%-14s %-12s MISSING (log out/in after install)\n' libvirt-group -
-		missing=1
-	fi
+	# Three states, not two. usermod cannot alter a running session, so being in
+	# the group on disk but not in this shell means the install worked and only
+	# a re-login is outstanding — reporting that as missing makes a successful
+	# install look failed.
+	for g in libvirt kvm; do
+		if id -nG | tr ' ' '\n' | grep -qx "$g"; then
+			printf '%-14s %-12s ok\n' "${g}-group" -
+		elif in_group_on_disk "$g"; then
+			printf '%-14s %-12s pending (run: newgrp %s, or log out and back in)\n' "${g}-group" - "$g"
+		else
+			printf '%-14s %-12s MISSING — run make deps-install\n' "${g}-group" -
+			missing=1
+		fi
+	done
 
 	return $missing
 }
@@ -111,7 +125,7 @@ need_sudo() {
 install_apt() {
 	local todo=()
 	for p in "${APT_PACKAGES[@]}"; do
-		dpkg -s "$p" >/dev/null 2>&1 || todo+=("$p")
+		installed_pkg "$p" || todo+=("$p")
 	done
 	if [[ ${#todo[@]} -eq 0 ]]; then
 		log "apt packages already present"
@@ -168,18 +182,12 @@ install_tools() {
 
 enable_libvirt() {
 	sudo systemctl enable --now libvirtd
-	# The default NAT network is what e2e.sh attaches guests to unless a
-	# dedicated network is created; without it virt-install fails late.
-	sudo virsh net-info default >/dev/null 2>&1 || sudo virsh net-define /usr/share/libvirt/networks/default.xml
-	sudo virsh net-autostart default >/dev/null 2>&1 || true
-	sudo virsh net-start default >/dev/null 2>&1 || true
 	for g in libvirt kvm; do
 		getent group "$g" >/dev/null || continue
-		id -nG | tr ' ' '\n' | grep -qx "$g" || {
-			log "adding $USER to group $g"
-			sudo usermod -aG "$g" "$USER"
-			warn "log out and back in (or run: newgrp $g) before hack/e2e.sh up"
-		}
+		in_group_on_disk "$g" && continue
+		log "adding $USER to group $g"
+		sudo usermod -aG "$g" "$USER"
+		warn "log out and back in (or run: newgrp $g) before hack/e2e.sh up"
 	done
 }
 
