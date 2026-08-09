@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
+	"github.com/rusik69/paas/internal/controller/platform"
 	"github.com/rusik69/paas/internal/crd"
 	"github.com/rusik69/paas/internal/flux"
 	"github.com/rusik69/paas/internal/operator"
@@ -25,15 +26,17 @@ func main() {
 		"how long to wait for the CRDs and Flux to install before giving up")
 	metricsAddress := flag.String("metrics-bind-address", ":8080",
 		`address the metrics endpoint binds to; "0" disables it`)
+	insecureRegistry := flag.Bool("insecure-registry", true,
+		"pull release artifacts over plain HTTP; the in-cluster registry speaks it")
 	flag.Parse()
 
-	if err := run(*installTimeout, *metricsAddress); err != nil {
+	if err := run(*installTimeout, *metricsAddress, *insecureRegistry); err != nil {
 		fmt.Fprintf(os.Stderr, "paas-operator: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(installTimeout time.Duration, metricsAddress string) error {
+func run(installTimeout time.Duration, metricsAddress string, insecureRegistry bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -51,9 +54,7 @@ func run(installTimeout time.Duration, metricsAddress string) error {
 
 	mgr, err := operator.NewManager(cfg, operator.Options{
 		MetricsAddress: metricsAddress,
-		// No fetcher yet: the OCI implementation arrives with the publishing
-		// pipeline, and a Platform reconcile fails loudly until it does.
-		Fetcher: nil,
+		Fetcher:        &platform.OCIFetcher{Insecure: insecureRegistry},
 	})
 	if err != nil {
 		return err

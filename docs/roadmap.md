@@ -75,7 +75,7 @@ asserted by the suite itself, with `make cover` and every CI job green.
   migrations land before component upgrades.
   *(Landed: all three reconcilers and the manager that runs them. `Platform` applies and
   prunes, so an upgrade removes what a release drops and a rollback reproduces the earlier
-  state exactly. The OCI fetcher behind the `Fetcher` interface is outstanding, and has
+  state exactly. The OCI fetcher is implemented and tested against a real registry; it has
   nothing to pull until the publishing pipeline below exists.)*
 - Chart publishing pipeline: `packages/**` → OCI artifacts in the registry.
 
