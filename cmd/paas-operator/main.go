@@ -1,7 +1,5 @@
-// Command paas-operator installs the platform CRDs and reconciles Platform.
-//
-// Today it does the first half only: it applies the CRDs it was built with and
-// exits. The reconcilers arrive with the next phase-1 increment.
+// Command paas-operator installs the platform CRDs, bootstraps Flux, and runs
+// the Platform, PackageSource and Package reconcilers.
 package main
 
 import (
@@ -13,23 +11,29 @@ import (
 	"syscall"
 	"time"
 
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	"github.com/rusik69/paas/internal/crd"
+	"github.com/rusik69/paas/internal/flux"
+	"github.com/rusik69/paas/internal/operator"
 )
 
 func main() {
-	timeout := flag.Duration("crd-install-timeout", 2*time.Minute,
-		"how long to wait for every CRD to become Established")
+	installTimeout := flag.Duration("install-timeout", 5*time.Minute,
+		"how long to wait for the CRDs and Flux to install before giving up")
+	metricsAddress := flag.String("metrics-bind-address", ":8080",
+		`address the metrics endpoint binds to; "0" disables it`)
 	flag.Parse()
 
-	if err := run(*timeout); err != nil {
+	if err := run(*installTimeout, *metricsAddress); err != nil {
 		fmt.Fprintf(os.Stderr, "paas-operator: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(timeout time.Duration) error {
+func run(installTimeout time.Duration, metricsAddress string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -38,10 +42,41 @@ func run(timeout time.Duration) error {
 		return fmt.Errorf("load kubeconfig: %w", err)
 	}
 
-	n, err := crd.Install(ctx, cfg, timeout)
+	// Install before the manager starts: its caches watch kinds that do not
+	// exist until the CRDs are Established, and starting first makes that a
+	// race the operator loses on a clean cluster.
+	if err := install(ctx, cfg, installTimeout); err != nil {
+		return err
+	}
+
+	mgr, err := operator.NewManager(cfg, operator.Options{
+		MetricsAddress: metricsAddress,
+		// No fetcher yet: the OCI implementation arrives with the publishing
+		// pipeline, and a Platform reconcile fails loudly until it does.
+		Fetcher: nil,
+	})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("installed %d CRDs, all Established\n", n)
+	return operator.Run(ctx, mgr)
+}
+
+func install(ctx context.Context, cfg *rest.Config, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	c, err := client.New(cfg, client.Options{Scheme: operator.Scheme})
+	if err != nil {
+		return fmt.Errorf("build client: %w", err)
+	}
+
+	n, err := crd.Apply(ctx, c)
+	if err != nil {
+		return err
+	}
+	if err := flux.Bootstrap(ctx, c); err != nil {
+		return fmt.Errorf("bootstrap flux: %w", err)
+	}
+	fmt.Printf("installed %d CRDs and the Flux controllers\n", n)
 	return nil
 }

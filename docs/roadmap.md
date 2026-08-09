@@ -73,9 +73,10 @@ asserted by the suite itself, with `make cover` and every CI job green.
   *(Landed: vendored manifests, embedded and applied on start. Sharding flags outstanding.)*
 - `Platform`, `PackageSource`, `Package` reconcilers; two-stage OCI repositories so
   migrations land before component upgrades.
-  *(Landed: `PackageSource` → Flux `HelmRepository`, `Package` → Flux `HelmRelease` with the
-  migration-before-component `dependsOn`. The `Platform` reconciler, which pulls the release
-  artifact and prunes, is outstanding.)*
+  *(Landed: all three reconcilers and the manager that runs them. `Platform` applies and
+  prunes, so an upgrade removes what a release drops and a rollback reproduces the earlier
+  state exactly. The OCI fetcher behind the `Fetcher` interface is outstanding, and has
+  nothing to pull until the publishing pipeline below exists.)*
 - Chart publishing pipeline: `packages/**` → OCI artifacts in the registry.
 
 **Done when:** changing the version field on one `Platform` CR rolls out a complete platform

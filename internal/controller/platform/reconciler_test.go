@@ -173,7 +173,8 @@ func TestReconcile_PackageApplyFailureIsReported(t *testing.T) {
 		WithObjects(cluster()).WithStatusSubresource(&v1alpha1.Platform{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object,
-				patch client.Patch, opts ...client.PatchOption) error {
+				patch client.Patch, opts ...client.PatchOption,
+			) error {
 				if _, ok := obj.(*v1alpha1.Package); ok {
 					return boom
 				}
