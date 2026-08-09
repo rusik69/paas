@@ -70,7 +70,8 @@ asserted by the suite itself, with `make cover` and every CI job green.
   *(Landed: the three types, controller-gen wiring, the embedded manifests, the applier and
   the envtest tier. The reconcilers below are outstanding.)*
 - Flux bootstrap from the operator (source-controller + helm-controller, sharded).
-  *(Landed: vendored manifests, embedded and applied on start. Sharding flags outstanding.)*
+  *(Landed: vendored manifests, embedded and applied on start, both controllers confined to
+  the default shard so a second one can be added without touching this one.)*
 - `Platform`, `PackageSource`, `Package` reconcilers; two-stage OCI repositories so
   migrations land before component upgrades.
   *(Landed: all three reconcilers and the manager that runs them. `Platform` applies and
