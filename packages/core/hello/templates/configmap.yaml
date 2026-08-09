@@ -1,0 +1,13 @@
+{{- /*
+  A ConfigMap rather than a workload: this exists to prove a release rolled out
+  and to be readable by an assertion, and a Deployment would add image pulls and
+  scheduling to a test about versions.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+data:
+  message: {{ .Values.message | quote }}
+  chartVersion: {{ .Chart.Version | quote }}

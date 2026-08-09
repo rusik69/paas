@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "image": {
+      "type": "string",
+      "description": "Image the migration Job runs."
+    },
+    "message": {
+      "type": "string",
+      "description": "What the Job records, so a test can tell versions apart."
+    }
+  }
+}

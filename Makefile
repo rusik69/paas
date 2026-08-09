@@ -172,6 +172,17 @@ deps-install: ## Install missing phase-0 tooling (needs sudo)
 versions: ## Verify every pinned external version still resolves
 	hack/versions.sh check
 
+## --- packaging ----------------------------------------------------------------
+
+.PHONY: publish
+publish: ## Push every chart and a release artifact. VERSION=vX.Y.Z REGISTRY=oci://host/repo
+	@test -n "$(VERSION)" || { echo "set VERSION, e.g. make publish VERSION=v0.1.0"; exit 1; }
+	hack/publish.sh all $(VERSION)
+
+.PHONY: publish-charts
+publish-charts: ## Push every chart under packages/ without cutting a release
+	hack/publish.sh charts
+
 ## --- e2e ---------------------------------------------------------------------
 
 .PHONY: cluster-up

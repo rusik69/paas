@@ -78,6 +78,9 @@ asserted by the suite itself, with `make cover` and every CI job green.
   state exactly. The OCI fetcher is implemented and tested against a real registry; it has
   nothing to pull until the publishing pipeline below exists.)*
 - Chart publishing pipeline: `packages/**` → OCI artifacts in the registry.
+  *(Landed: `hack/publish.sh` and `make publish`. Charts go to `<registry>/charts`, the release
+  manifest to `<registry>:<version>`, and a test pushes through the script and reads it back
+  with the operator's own fetcher.)*
 
 **Done when:** changing the version field on one `Platform` CR rolls out a complete platform
 version, and rolling it back works.

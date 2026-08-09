@@ -1,0 +1,23 @@
+{{- /*
+  A Job, not a Deployment: helm-controller only reports this release Ready once
+  the Job completes, which is what makes the component that dependsOn it wait.
+*/ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: {{ .Values.image | quote }}
+          # Block form: `quote` inside a JSON-style array would emit nested
+          # double quotes and the document would not parse.
+          command:
+            - sh
+            - -c
+            - echo {{ .Values.message | quote }}

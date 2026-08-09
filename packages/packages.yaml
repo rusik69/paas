@@ -1,0 +1,17 @@
+# The platform release manifest: what one platform version installs.
+#
+# Read by the Platform reconciler out of the release artifact, never from this
+# file directly — hack/publish.sh pushes it, and the cluster only ever sees the
+# pushed copy.
+#
+# stage orders the rollout. Every migration reaches Ready before any component
+# starts, enforced by Flux dependsOn rather than by sequencing at runtime.
+packages:
+  - name: hello-migrate
+    chart: hello-migrate
+    version: "0.1.0"
+    stage: migration
+  - name: hello
+    chart: hello
+    version: "0.1.0"
+    stage: component

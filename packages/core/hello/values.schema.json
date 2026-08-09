@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "message": {
+      "type": "string",
+      "description": "Recorded in the ConfigMap, so a test can tell one release from another."
+    }
+  }
+}
