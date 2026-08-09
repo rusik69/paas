@@ -230,24 +230,24 @@ create_domain() {
 		--noautoconsole >/dev/null
 }
 
-wait_maintenance() {
-	step "waiting for nodes to reach Talos maintenance mode"
+wait_nodes_reachable() {
+	step "waiting for the Talos API on every node"
 	local spec ip
 	for spec in "${NODES[@]}"; do
 		ip="$(node_field "$spec" ip)"
-		# A configured node never re-enters maintenance mode, and its insecure
-		# API rejects the connection with "certificate required" — so waiting
-		# for it on a re-run is a ten-minute wait per node for something that
-		# already happened. The secure API answering is the proof it did.
-		if talosctl get machinestatus --nodes "$ip" --endpoints "$ip" >/dev/null 2>&1; then
-			log "node ${ip} is already configured"
-			continue
-		fi
+		# Either API, because which one answers is the question apply_configs
+		# exists to answer. Deciding it here — one probe of the secure API
+		# before a node this loop has only just powered on has finished booting
+		# — reads a configured node as a maintenance-mode one and then waits
+		# ten minutes for an insecure API that will never answer it.
+		#
 		# machinestatus, not version: the version API is unimplemented in
 		# maintenance mode, so it fails on a node that is perfectly ready.
 		# Flags come after the subcommand — talosctl rejects them before it.
-		retry 120 5 "node ${ip} maintenance mode" -- \
-			talosctl get machinestatus --insecure --nodes "$ip" --endpoints "$ip" >/dev/null
+		# shellcheck disable=SC2016 # must expand in the inner shell, on each retry
+		retry 120 5 "node ${ip} Talos API" -- bash -c '
+			talosctl get machinestatus --nodes "$1" --endpoints "$1" >/dev/null 2>&1 ||
+				talosctl get machinestatus --insecure --nodes "$1" --endpoints "$1" >/dev/null 2>&1' _ "$ip"
 		log "node ${ip} is up"
 	done
 }
@@ -439,7 +439,7 @@ cmd_up() {
 	local spec
 	for spec in "${NODES[@]}"; do create_domain "$spec" "$iso_path"; done
 
-	wait_maintenance
+	wait_nodes_reachable
 	gen_configs
 	apply_configs
 	bootstrap_etcd
