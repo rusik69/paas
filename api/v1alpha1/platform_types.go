@@ -82,6 +82,10 @@ type PlatformStatus struct {
 
 // Platform pins one platform release for the whole cluster.
 //
+// A singleton: two Platforms would be two answers to "what version is this
+// cluster", and nothing downstream is built to reconcile that.
+//
+// +kubebuilder:validation:XValidation:rule="self.metadata.name == 'cluster'",message="the Platform is a singleton and must be named cluster"
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:subresource:status

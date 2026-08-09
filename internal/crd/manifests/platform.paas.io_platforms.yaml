@@ -27,7 +27,11 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Platform pins one platform release for the whole cluster.
+        description: |-
+          Platform pins one platform release for the whole cluster.
+
+          A singleton: two Platforms would be two answers to "what version is this
+          cluster", and nothing downstream is built to reconcile that.
         properties:
           apiVersion:
             description: |-
@@ -185,6 +189,9 @@ spec:
                 type: integer
             type: object
         type: object
+        x-kubernetes-validations:
+        - message: the Platform is a singleton and must be named cluster
+          rule: self.metadata.name == 'cluster'
     served: true
     storage: true
     subresources:
