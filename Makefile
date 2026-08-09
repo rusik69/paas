@@ -32,6 +32,7 @@ test: ## Unit tests, race detector on. Must stay under ten seconds.
 .PHONY: cover
 cover: ## Unit coverage, failing below COVERAGE_MIN
 	$(GO) test -race -timeout $(UNIT_TIMEOUT) -coverprofile=coverage.out -covermode=atomic ./...
+	@grep -v '/zz_generated\.' coverage.out >coverage.filtered && mv coverage.filtered coverage.out
 	@$(GO) tool cover -func=coverage.out | tail -1
 	@total=$$($(GO) tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$$3); print $$3}'); \
 	awk -v got="$$total" -v min=$(COVERAGE_MIN) 'BEGIN { \
@@ -45,6 +46,13 @@ vet: ## go vet — separate from lint, non-negotiable in CI
 .PHONY: vet-e2e
 vet-e2e: ## The e2e suite is behind a build tag and invisible to `make test`
 	$(GO) vet -tags e2e ./...
+
+.PHONY: generate
+generate: ## controller-gen: deepcopy methods and CRD manifests
+	$(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(call pin,CONTROLLER_GEN_VERSION) \
+		object paths=./api/...
+	$(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(call pin,CONTROLLER_GEN_VERSION) \
+		crd paths=./api/... output:crd:artifacts:config=internal/crd/manifests
 
 .PHONY: actionlint
 actionlint: ## Lint the GitHub Actions workflows

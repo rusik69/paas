@@ -18,6 +18,10 @@ ACTIONLINT_VERSION="${ACTIONLINT_VERSION:-v1.7.12}"
 SHFMT_VERSION="${SHFMT_VERSION:-v3.13.1}"
 GOVULNCHECK_VERSION="${GOVULNCHECK_VERSION:-v1.6.0}"
 
+# Matched to k8s.io/* v0.34.1. controller-tools v0.20+ targets k8s 0.35 and
+# 0.36, and generates schemas for an apimachinery we do not run.
+CONTROLLER_GEN_VERSION="${CONTROLLER_GEN_VERSION:-v0.19.0}"
+
 TALOS_VERSION="${TALOS_VERSION:-v1.11.2}" # must match TALOSCTL_VERSION
 KUBERNETES_VERSION="${KUBERNETES_VERSION:-v1.34.1}"
 CILIUM_VERSION="${CILIUM_VERSION:-1.18.12}" # helm chart version
@@ -76,6 +80,7 @@ versions_check() {
 	_check_url actionlint "https://github.com/rhysd/actionlint/releases/tag/${ACTIONLINT_VERSION}" || rc=1
 	_check_url shfmt "https://github.com/mvdan/sh/releases/tag/${SHFMT_VERSION}" || rc=1
 	_check_url govulncheck "https://github.com/golang/vuln/releases/tag/${GOVULNCHECK_VERSION}" || rc=1
+	_check_url controller-gen "https://github.com/kubernetes-sigs/controller-tools/releases/tag/${CONTROLLER_GEN_VERSION}" || rc=1
 
 	# Buffered rather than piped into grep: under `set -o pipefail`, grep -q
 	# exiting early makes curl fail with SIGPIPE and the chart reads as missing.
