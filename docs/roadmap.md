@@ -41,6 +41,10 @@ e2e harness itself.
 - Cilium with kube-proxy replacement and Gateway API enabled.
 - Piraeus operator, `replicated-2` and `replicated-3` StorageClasses.
 - `hack/e2e.sh` up/down, idempotent, runnable in CI.
+- `AGENTS.md` — the conventions and traps a coding agent must know, pointing at
+  these documents rather than restating them. It ships in phase 0 because an
+  agent that learns the wrong conventions in phase 1 encodes them everywhere,
+  and every later phase is written on top of that.
 
 **Done when:** `hack/e2e.sh` brings up a cluster from nothing and binds a `replicated-3` PVC
 that survives killing the node holding the primary replica.

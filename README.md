@@ -22,6 +22,7 @@ Piraeus/DRBD are in place; no platform code yet.
 | [docs/roadmap.md](docs/roadmap.md) | Build order, seven phases, each with a CI-checkable exit criterion |
 | [docs/testing.md](docs/testing.md) | Test strategy from unit through e2e, isolation, upgrade, and restore drills |
 | [docs/go-guidelines.md](docs/go-guidelines.md) | Go and controller conventions for this repo |
+| [AGENTS.md](AGENTS.md) | Short-form conventions, commands and repo-specific traps, for coding agents |
 
 ## Development
 
