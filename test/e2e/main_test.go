@@ -19,6 +19,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -34,6 +35,8 @@ var (
 		"image used by storage fixtures")
 
 	clientset *kubernetes.Clientset
+	// For the CRD-defined kinds the platform installs but does not own.
+	dynClient *dynamic.DynamicClient
 )
 
 func TestMain(m *testing.M) {
@@ -56,6 +59,11 @@ func TestMain(m *testing.M) {
 
 	if clientset, err = kubernetes.NewForConfig(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: build client: %v\n", err)
+		os.Exit(1)
+	}
+
+	if dynClient, err = dynamic.NewForConfig(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: build dynamic client: %v\n", err)
 		os.Exit(1)
 	}
 

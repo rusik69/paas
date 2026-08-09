@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -11,6 +12,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/rusik69/paas/pkg/wait"
 )
@@ -117,6 +120,52 @@ func TestCluster_CiliumRunsOnEveryNode(t *testing.T) {
 	}
 	if got, want := int(ds.Status.DesiredNumberScheduled), len(topology(t)); got != want {
 		t.Errorf("cilium desired = %d, want %d — one per node", got, want)
+	}
+}
+
+// Guards GATEWAY_API_VERSION. Cilium understands only the CRD version it
+// declares conformance against, and a newer one is accepted by the apiserver
+// and then surfaces as a reconcile error on the GatewayClass — which, without
+// this, nothing would notice until phase 4 built routing on top of it.
+func TestCluster_GatewayClassIsAccepted(t *testing.T) {
+	gvr := schema.GroupVersionResource{
+		Group:    "gateway.networking.k8s.io",
+		Version:  "v1",
+		Resource: "gatewayclasses",
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
+	defer cancel()
+
+	var last string
+	err := wait.For(ctx, 5*time.Second, "gatewayclass/cilium Accepted", func(ctx context.Context) (bool, error) {
+		gc, err := dynClient.Resource(gvr).Get(ctx, "cilium", metav1.GetOptions{})
+		if err != nil {
+			// Once the deadline passes every call fails the same way, and
+			// recording that would overwrite the reconcile message this test
+			// exists to report.
+			if ctx.Err() == nil {
+				last = err.Error()
+			}
+			return false, nil
+		}
+		conds, _, err := unstructured.NestedSlice(gc.Object, "status", "conditions")
+		if err != nil {
+			return false, err
+		}
+		for _, c := range conds {
+			m, ok := c.(map[string]any)
+			if !ok || m["type"] != "Accepted" {
+				continue
+			}
+			last = fmt.Sprintf("status=%v reason=%v message=%v", m["status"], m["reason"], m["message"])
+			return m["status"] == string(metav1.ConditionTrue), nil
+		}
+		last = "no Accepted condition on gatewayclass/cilium"
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("%v (last: %s)", err, last)
 	}
 }
 
