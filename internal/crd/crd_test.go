@@ -25,7 +25,11 @@ func TestLoad_ReturnsEveryEmbeddedCRD(t *testing.T) {
 	for _, c := range crds {
 		got = append(got, c.Name)
 	}
-	want := []string{"platforms.platform.paas.io"}
+	want := []string{
+		"packages.platform.paas.io",
+		"packagesources.platform.paas.io",
+		"platforms.platform.paas.io",
+	}
 
 	less := func(a, b string) bool { return a < b }
 	if diff := cmp.Diff(want, got, cmpopts.SortSlices(less)); diff != "" {

@@ -25,7 +25,11 @@ var SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
 var AddToScheme = SchemeBuilder.AddToScheme
 
 func addKnownTypes(s *runtime.Scheme) error {
-	s.AddKnownTypes(GroupVersion, &Platform{}, &PlatformList{})
+	s.AddKnownTypes(GroupVersion,
+		&Platform{}, &PlatformList{},
+		&PackageSource{}, &PackageSourceList{},
+		&Package{}, &PackageList{},
+	)
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil
 }

@@ -44,8 +44,14 @@ func TestApply_ReportsWhichCRDFailed(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the client error", err)
 	}
-	if !strings.Contains(err.Error(), "platforms.platform.paas.io") {
-		t.Errorf("err = %q, want it to name the CRD that failed", err)
+	// Whichever CRD it reached first, not a hardcoded name: the set grows, and
+	// a test pinned to one member fails for the wrong reason when it does.
+	crds, loadErr := Load()
+	if loadErr != nil {
+		t.Fatalf("Load: %v", loadErr)
+	}
+	if !strings.Contains(err.Error(), crds[0].Name) {
+		t.Errorf("err = %q, want it to name %s, the CRD it failed on", err, crds[0].Name)
 	}
 }
 
@@ -113,5 +119,82 @@ func TestWaitEstablished_MissingCRDExpires(t *testing.T) {
 
 	if err := waitEstablished(ctx, c, "absent.platform.paas.io"); err == nil {
 		t.Error("a CRD that never appeared was reported as Established")
+	}
+}
+
+// A transient API error must not abort the wait. Returning it would turn a
+// one-second blip during startup into a failed CRD install.
+func TestWaitEstablished_SurvivesATransientGetError(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	c := fake.NewClientBuilder().
+		WithScheme(testScheme(t)).
+		WithObjects(&apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: "platforms.platform.paas.io"},
+			Status: apiextensionsv1.CustomResourceDefinitionStatus{
+				Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{{
+					Type:   apiextensionsv1.Established,
+					Status: apiextensionsv1.ConditionTrue,
+				}},
+			},
+		}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey,
+				obj client.Object, opts ...client.GetOption,
+			) error {
+				if calls++; calls == 1 {
+					return errors.New("connection refused")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	if err := waitEstablished(ctx, c, "platforms.platform.paas.io"); err != nil {
+		t.Errorf("waitEstablished: %v — a transient error ended the wait", err)
+	}
+	if calls < 2 {
+		t.Errorf("Get called %d times, want the failure to have been retried", calls)
+	}
+}
+
+// Apply must surface a CRD that applies cleanly but never establishes, rather
+// than returning success once every Patch has gone through.
+func TestApply_FailsWhenACRDNeverEstablishes(t *testing.T) {
+	t.Parallel()
+
+	crds, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Seeded with an unrelated condition, so the wait sees a live object and
+	// still finds no Established among its conditions.
+	stuck := &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: crds[0].Name},
+		Status: apiextensionsv1.CustomResourceDefinitionStatus{
+			Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{{
+				Type:   apiextensionsv1.NamesAccepted,
+				Status: apiextensionsv1.ConditionTrue,
+			}},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(testScheme(t)).
+		WithObjects(stuck).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+				return nil
+			},
+		}).Build()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := Apply(ctx, c); err == nil {
+		t.Error("a CRD that never established was reported as installed")
 	}
 }

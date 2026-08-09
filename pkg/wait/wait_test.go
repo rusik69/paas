@@ -172,3 +172,27 @@ func TestStable_PropagatesTerminalError(t *testing.T) {
 		}
 	})
 }
+
+// The first evaluation happens before any tick, so a condition that only turns
+// terminal later takes a different path out of the loop than the one above.
+func TestFor_TerminalErrorOnALaterTickAlsoAborts(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		terminal := errors.New("cluster entered Failed phase")
+		calls := 0
+
+		err := wait.For(t.Context(), time.Minute, "cluster ready", func(context.Context) (bool, error) {
+			if calls++; calls == 1 {
+				return false, nil
+			}
+			return false, terminal
+		})
+		if !errors.Is(err, terminal) {
+			t.Fatalf("For() = %v, want error wrapping %v", err, terminal)
+		}
+		if calls != 2 {
+			t.Errorf("condition called %d times, want 2 — the tick path was not taken", calls)
+		}
+	})
+}
