@@ -70,8 +70,12 @@ asserted by the suite itself, with `make cover` and every CI job green.
   *(Landed: the three types, controller-gen wiring, the embedded manifests, the applier and
   the envtest tier. The reconcilers below are outstanding.)*
 - Flux bootstrap from the operator (source-controller + helm-controller, sharded).
+  *(Landed: vendored manifests, embedded and applied on start. Sharding flags outstanding.)*
 - `Platform`, `PackageSource`, `Package` reconcilers; two-stage OCI repositories so
   migrations land before component upgrades.
+  *(Landed: `PackageSource` → Flux `HelmRepository`, `Package` → Flux `HelmRelease` with the
+  migration-before-component `dependsOn`. The `Platform` reconciler, which pulls the release
+  artifact and prunes, is outstanding.)*
 - Chart publishing pipeline: `packages/**` → OCI artifacts in the registry.
 
 **Done when:** changing the version field on one `Platform` CR rolls out a complete platform
