@@ -127,3 +127,25 @@ func (u unreadableFS) Open(name string) (fs.File, error) {
 	}
 	return u.FS.Open(name)
 }
+
+// fs.Glob delegates to the filesystem when it implements GlobFS, which is what
+// makes this branch reachable at all. A filesystem that fails to enumerate must
+// surface that rather than read as an empty embed.
+type globErrFS struct{ fs.FS }
+
+func (globErrFS) Glob(string) ([]string, error) { return nil, fs.ErrInvalid }
+
+func TestLoad_GlobFailureIsReported(t *testing.T) {
+	t.Parallel()
+
+	_, err := load(globErrFS{fstest.MapFS{}})
+	if err == nil {
+		t.Fatal("a glob failure was swallowed")
+	}
+	if errors.Is(err, ErrNoManifests) {
+		t.Error("a glob failure was reported as an empty embed")
+	}
+	if !strings.Contains(err.Error(), "glob") {
+		t.Errorf("err = %q, want it to name the failing step", err)
+	}
+}

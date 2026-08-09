@@ -34,8 +34,17 @@ test: ## Unit tests, race detector on. Must stay under ten seconds.
 	$(GO) test -race -timeout $(UNIT_TIMEOUT) ./...
 
 .PHONY: cover
-cover: ## Unit coverage, failing below COVERAGE_MIN
-	$(GO) test -race -timeout $(UNIT_TIMEOUT) -coverprofile=coverage.out -covermode=atomic ./...
+cover: ## Coverage across both test tiers, failing below COVERAGE_MIN
+	# One run with the integration tag, not two profiles merged: the untagged
+	# unit tests compile into this build too, so this is the union already, and
+	# merging profiles by hand double-counts the blocks both tiers execute.
+	#
+	# Gating on the unit tier alone would demand fake-client tests for
+	# server-side apply, which go-guidelines forbids: testing SSA against a fake
+	# tests the fake.
+	KUBEBUILDER_ASSETS="$$($(ENVTEST_ASSETS))" \
+		$(GO) test -tags integration -race -timeout $(INTEGRATION_TIMEOUT) \
+		-coverprofile=coverage.out -covermode=atomic ./...
 	@grep -v '/zz_generated\.' coverage.out >coverage.filtered && mv coverage.filtered coverage.out
 	@$(GO) tool cover -func=coverage.out | tail -1
 	@total=$$($(GO) tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$$3); print $$3}'); \
@@ -55,9 +64,12 @@ vet-e2e: ## The e2e suite is behind a build tag and invisible to `make test`
 vet-integration: ## The envtest suite is behind a build tag and invisible to `make test`
 	$(GO) vet -tags integration ./...
 
+# Downloading on demand, so a fresh checkout needs no install step.
+ENVTEST_ASSETS = $(GO) run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(call pin,SETUP_ENVTEST_VERSION) use -p path $(ENVTEST_K8S_VERSION)
+
 .PHONY: test-integration
 test-integration: ## envtest — a real apiserver and etcd, no kubelet
-	KUBEBUILDER_ASSETS="$$($(GO) run sigs.k8s.io/controller-runtime/tools/setup-envtest@$(call pin,SETUP_ENVTEST_VERSION) use -p path $(ENVTEST_K8S_VERSION))" \
+	KUBEBUILDER_ASSETS="$$($(ENVTEST_ASSETS))" \
 		$(GO) test -tags integration -race -timeout $(INTEGRATION_TIMEOUT) ./...
 
 .PHONY: generate
