@@ -19,7 +19,7 @@ ENVTEST_K8S_VERSION ?= 1.34.x
 #
 # Add a package here when it becomes load-bearing. Raise the floor when a phase
 # lands above it; never lower it to make a red build green.
-COVERED_PACKAGES ?= internal/crd internal/flux internal/kube pkg/wait
+COVERED_PACKAGES ?= internal/controller/packagesource internal/controller/pkg internal/crd internal/flux internal/kube pkg/wait
 COVERAGE_MIN ?= 95
 MODULE := github.com/rusik69/paas
 
@@ -44,6 +44,14 @@ test: ## Unit tests, race detector on. Must stay under ten seconds.
 # unit tier alone would demand fake-client tests for server-side apply, which
 # go-guidelines forbids — testing SSA against a fake tests the fake.
 #
+# Blocks are deduplicated by key below, because -coverpkg repeats every block
+# once per test binary and summing them would inflate both halves of the ratio.
+#
+# -coverpkg=./... because the reconciler tests live in internal/controller while
+# the reconcilers live in its sub-packages. Without it Go instruments only the
+# package under test, and a reconciler covered entirely by a neighbour's tests
+# reads as zero.
+#
 # Two exclusions. Generated deepcopy is mechanical and large enough to dominate
 # the number in either direction. cmd/ is flag wiring by construction, because
 # go-guidelines requires it stay thin and everything real live below; measuring
@@ -52,22 +60,26 @@ test: ## Unit tests, race detector on. Must stay under ten seconds.
 cover: ## Coverage across both test tiers, failing below COVERAGE_MIN
 	KUBEBUILDER_ASSETS="$$($(ENVTEST_ASSETS))" \
 		$(GO) test -tags integration -race -timeout $(INTEGRATION_TIMEOUT) \
-		-coverprofile=coverage.out -covermode=atomic ./...
+		-coverpkg=./... -coverprofile=coverage.out -covermode=atomic ./...
 	@grep -vE '/zz_generated\.|/cmd/' coverage.out >coverage.filtered && mv coverage.filtered coverage.out
 	@$(GO) tool cover -func=coverage.out | tail -1
 	@awk -v pkgs="$(COVERED_PACKAGES)" -v module="$(MODULE)" -v min=$(COVERAGE_MIN) ' \
 	NR > 1 { \
-		file = $$1; sub(/:.*/, "", file); sub(/\/[^\/]*$$/, "", file); \
-		total[file] += $$2; if ($$3 > 0) covered[file] += $$2 \
+		stmts[$$1] = $$2; if ($$3 > 0) hit[$$1] = 1 \
 	} \
 	END { \
+		for (key in stmts) { \
+			file = key; sub(/:.*/, "", file); sub(/\/[^\/]*$$/, "", file); \
+			total[file] += stmts[key]; \
+			if (key in hit) covered[file] += stmts[key] \
+		} \
 		n = split(pkgs, want, " "); rc = 0; \
 		for (i = 1; i <= n; i++) { \
 			p = module "/" want[i]; \
 			if (!(p in total)) { printf "no coverage data for %s\n", want[i]; rc = 1; continue } \
 			pct = 100 * covered[p] / total[p]; \
-			if (pct + 0 < min + 0) { printf "%-16s %.1f%% is below the %s%% floor\n", want[i], pct, min; rc = 1 } \
-			else { printf "%-16s %.1f%% (floor %s%%)\n", want[i], pct, min } \
+			if (pct + 0 < min + 0) { printf "%-34s %.1f%% is below the %s%% floor\n", want[i], pct, min; rc = 1 } \
+			else { printf "%-34s %.1f%% (floor %s%%)\n", want[i], pct, min } \
 		} \
 		exit rc \
 	}' coverage.out
