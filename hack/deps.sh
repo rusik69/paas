@@ -21,7 +21,9 @@ BINDIR="${BINDIR:-/usr/local/bin}"
 APT_PACKAGES=(
 	make git curl jq
 	gettext-base # envsubst, used to render the Talos config patches
-	qemu-kvm libvirt-daemon-system libvirt-clients virtinst
+	# qemu-system-x86, not qemu-kvm: the latter is a virtual package on
+	# Debian trixie and Ubuntu 25.10+, and apt refuses to install one.
+	qemu-system-x86 libvirt-daemon-system libvirt-clients virtinst
 	genisoimage # talos machine-config delivery via a metadata ISO
 	docker.io   # chart/image publishing in phase 1; not used by phase-0 e2e
 )
@@ -40,7 +42,7 @@ version_of() {
 	case "$1" in
 	kubectl) kubectl version --client -o json 2>/dev/null | jq -r .clientVersion.gitVersion 2>/dev/null ;;
 	helm) helm version --template '{{.Version}}' 2>/dev/null ;;
-	talosctl) talosctl version --client --short 2>/dev/null | awk '/Tag/ {print $2}' ;;
+	talosctl) talosctl version --client 2>/dev/null | awk '/Tag:/ {print $2}' ;;
 	flux) flux version --client 2>/dev/null | awk '/flux/ {print $2}' ;;
 	esac
 }
@@ -120,26 +122,37 @@ install_apt() {
 	sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "${todo[@]}"
 }
 
+# One scratch dir for the whole run. A per-function `trap ... RETURN` is not
+# scoped to that function: it stays installed and fires again on the next
+# return, when its local temp variable is gone and `set -u` aborts the script.
+SCRATCH=""
+cleanup() { [[ -z "$SCRATCH" ]] || rm -rf "$SCRATCH"; }
+trap cleanup EXIT
+
+scratch_dir() {
+	[[ -n "$SCRATCH" ]] || SCRATCH="$(mktemp -d)"
+	local d="$SCRATCH/$1"
+	mkdir -p "$d"
+	printf '%s' "$d"
+}
+
 # fetch_bin <name> <url> — download a bare binary to $BINDIR.
 fetch_bin() {
-	local name="$1" url="$2" tmp
-	tmp="$(mktemp -d)"
-	trap 'rm -rf "$tmp"' RETURN
+	local name="$1" url="$2" d
+	d="$(scratch_dir "$name")"
 	log "installing $name from $url"
-	curl -fsSL --retry 3 -o "$tmp/$name" "$url"
-	chmod +x "$tmp/$name"
-	sudo install -m0755 "$tmp/$name" "$BINDIR/$name"
+	curl -fsSL --retry 3 -o "$d/$name" "$url"
+	sudo install -m0755 "$d/$name" "$BINDIR/$name"
 }
 
 # fetch_tgz <name> <url> <path-in-archive>
 fetch_tgz() {
-	local name="$1" url="$2" inner="$3" tmp
-	tmp="$(mktemp -d)"
-	trap 'rm -rf "$tmp"' RETURN
+	local name="$1" url="$2" inner="$3" d
+	d="$(scratch_dir "$name")"
 	log "installing $name from $url"
-	curl -fsSL --retry 3 -o "$tmp/a.tgz" "$url"
-	tar -xzf "$tmp/a.tgz" -C "$tmp"
-	sudo install -m0755 "$tmp/$inner" "$BINDIR/$name"
+	curl -fsSL --retry 3 -o "$d/a.tgz" "$url"
+	tar -xzf "$d/a.tgz" -C "$d"
+	sudo install -m0755 "$d/$inner" "$BINDIR/$name"
 }
 
 install_tools() {

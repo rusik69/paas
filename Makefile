@@ -13,7 +13,7 @@ E2E_TIMEOUT  ?= 45m
 # lower it to make a red build green. Coverage measures which lines ran, not
 # whether anything was asserted about them, so it is a floor under carelessness
 # and not evidence that the tests are good.
-COVERAGE_MIN ?= 85
+COVERAGE_MIN ?= 95
 
 .PHONY: help
 help: ## Show this help

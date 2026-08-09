@@ -15,9 +15,8 @@ import (
 	"github.com/rusik69/paas/pkg/wait"
 )
 
-// TestCluster_AllNodesReady is the cheapest possible smoke test and runs first
-// by name ordering, so a broken cluster fails in seconds rather than after the
-// storage suite has spent ten minutes timing out.
+// First by name ordering, so a broken cluster fails in seconds rather than
+// after the storage suite has spent ten minutes timing out.
 func TestCluster_AllNodesReady(t *testing.T) {
 	want := len(topology(t))
 
@@ -89,10 +88,10 @@ func TestCluster_DRBDExtensionIsInstalled(t *testing.T) {
 	}
 }
 
-// TestCluster_KubeProxyIsAbsent guards ADR 0002. Cilium's kube-proxy
-// replacement and a real kube-proxy both program service load balancing, and
-// when both are present the resulting behaviour depends on rule ordering — so
-// this asserts the specific absence rather than that services happen to work.
+// Guards ADR 0002. Cilium's kube-proxy replacement and a real kube-proxy both
+// program service load balancing, and with both present the behaviour depends
+// on rule ordering — so this asserts the absence rather than that services
+// happen to work.
 func TestCluster_KubeProxyIsAbsent(t *testing.T) {
 	pods, err := clientset.CoreV1().Pods("kube-system").List(t.Context(), metav1.ListOptions{
 		LabelSelector: "k8s-app=kube-proxy",
@@ -106,9 +105,8 @@ func TestCluster_KubeProxyIsAbsent(t *testing.T) {
 	}
 }
 
-// TestCluster_CiliumRunsOnEveryNode catches the case where Cilium installs but
-// its DaemonSet cannot schedule on a tainted node, which presents later as pods
-// on that one node having no network.
+// Catches Cilium installing but failing to schedule on a tainted node, which
+// presents later as pods on that one node having no network.
 func TestCluster_CiliumRunsOnEveryNode(t *testing.T) {
 	ds, err := clientset.AppsV1().DaemonSets("kube-system").Get(t.Context(), "cilium", metav1.GetOptions{})
 	if err != nil {
@@ -122,10 +120,7 @@ func TestCluster_CiliumRunsOnEveryNode(t *testing.T) {
 	}
 }
 
-// TestCluster_ReplicatedStorageClassesExist asserts the contract the rest of the
-// platform is written against: replicated-3 is the default, and the scratch
-// class is labelled non-durable so the phase-3 catalog can refuse to offer it
-// for databases.
+// The contract the rest of the platform is written against.
 func TestCluster_ReplicatedStorageClassesExist(t *testing.T) {
 	classes, err := clientset.StorageV1().StorageClasses().List(t.Context(), metav1.ListOptions{})
 	if err != nil {
@@ -133,8 +128,8 @@ func TestCluster_ReplicatedStorageClassesExist(t *testing.T) {
 	}
 
 	byName := map[string]bool{}
-	defaults := []string{}
 	durability := map[string]string{}
+	var defaults []string
 	for _, sc := range classes.Items {
 		byName[sc.Name] = true
 		durability[sc.Name] = sc.Annotations["paas.io/durability"]

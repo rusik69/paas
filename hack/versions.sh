@@ -1,36 +1,26 @@
 #!/usr/bin/env bash
-# Single source of truth for every pinned external version.
+# Every pinned external version. Nothing else may hardcode one — a version in
+# two places drifts, and the drift surfaces weeks later as an unreproducible
+# e2e failure.
 #
-# Sourced by deps.sh, e2e.sh and CI. Nothing else may hardcode a version — a
-# version that appears in two places drifts, and the drift surfaces as an
-# unreproducible e2e failure weeks later.
-#
-# Run `hack/versions.sh check` to verify every pin still resolves upstream.
+# `hack/versions.sh check` verifies every pin still resolves upstream.
 
-# Tools installed on the developer/CI machine.
 KUBECTL_VERSION="${KUBECTL_VERSION:-v1.34.1}"
 HELM_VERSION="${HELM_VERSION:-v3.19.0}"
 TALOSCTL_VERSION="${TALOSCTL_VERSION:-v1.11.2}"
-FLUX_VERSION="${FLUX_VERSION:-2.7.2}" # no leading v, flux release assets omit it
+FLUX_VERSION="${FLUX_VERSION:-2.7.2}" # no leading v; flux release assets omit it
 
-# Cluster components.
-TALOS_VERSION="${TALOS_VERSION:-v1.11.2}"    # must match TALOSCTL_VERSION
+TALOS_VERSION="${TALOS_VERSION:-v1.11.2}" # must match TALOSCTL_VERSION
 KUBERNETES_VERSION="${KUBERNETES_VERSION:-v1.34.1}"
-CILIUM_VERSION="${CILIUM_VERSION:-1.18.12}"  # helm chart version
+CILIUM_VERSION="${CILIUM_VERSION:-1.18.12}" # helm chart version
 PIRAEUS_VERSION="${PIRAEUS_VERSION:-v2.11.0}"
+
 # Pinned to what Cilium 1.18 declares conformance against. A newer Gateway API
-# release installs CRDs with fields the Cilium operator does not understand, and
-# it reports that as a reconcile error against the GatewayClass rather than as a
-# version mismatch.
+# installs CRDs with fields the Cilium operator does not understand, and it
+# reports that as a GatewayClass reconcile error rather than a version mismatch.
 GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.3.0}"
 
-# Talos Image Factory. The DRBD system extension MUST be baked into the
-# installer image; without it the first replicated PVC fails and the failure
-# mode is an opaque mount error, not a missing-module message.
 IMAGE_FACTORY="${IMAGE_FACTORY:-https://factory.talos.dev}"
-TALOS_EXTENSIONS="${TALOS_EXTENSIONS:-siderolabs/drbd siderolabs/qemu-guest-agent}"
-
-# --- check -------------------------------------------------------------------
 
 _check_url() {
 	local what="$1" url="$2"
@@ -54,10 +44,8 @@ versions_check() {
 	_check_url gateway-api "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml" || rc=1
 	_check_url piraeus "https://github.com/piraeusdatastore/piraeus-operator/releases/tag/${PIRAEUS_VERSION}" || rc=1
 
-	# The chart repository is an index, not a file tree, so a version is
-	# "present" only if it appears in the index. The index is buffered rather
-	# than piped into grep: under `set -o pipefail`, grep -q exiting early makes
-	# curl fail with SIGPIPE and the check reports a missing chart that is there.
+	# Buffered rather than piped into grep: under `set -o pipefail`, grep -q
+	# exiting early makes curl fail with SIGPIPE and the chart reads as missing.
 	local index
 	index="$(curl -fsSL --max-time 30 https://helm.cilium.io/index.yaml || true)"
 	if grep -q "version: ${CILIUM_VERSION}$" <<<"$index"; then
@@ -67,9 +55,8 @@ versions_check() {
 		rc=1
 	fi
 
-	# The Image Factory only proves out by building: a schematic naming a
-	# nonexistent extension is accepted at POST time and fails at image
-	# download, which is 900 MB too late.
+	# A schematic naming a nonexistent extension is accepted at POST time and
+	# fails at image download, which is 900 MB too late.
 	local id
 	id="$(curl -fsSL --max-time 30 -X POST --data-binary @"$(dirname "${BASH_SOURCE[0]}")/talos/schematic.yaml" \
 		"${IMAGE_FACTORY}/schematics" | jq -r .id 2>/dev/null || true)"

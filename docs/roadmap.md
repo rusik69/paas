@@ -24,7 +24,7 @@ starts by provisioning them:
 
 ```
 go  git  kubectl  helm  talosctl  flux
-qemu-kvm  libvirt-daemon-system  virt-install  virsh
+qemu-system-x86  libvirt-daemon-system  virt-install  virsh
 docker (or podman)
 ```
 

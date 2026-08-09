@@ -1,12 +1,9 @@
-// Package wait provides deadline-bounded polling for tests and reconcilers.
+// Package wait provides deadline-bounded polling.
 //
-// It exists so that no test in this repository reaches for time.Sleep. A sleep
-// encodes a guess about how long a cluster takes to converge; on a loaded CI
-// runner that guess is wrong in one direction and the test flakes, and on a
-// fast machine it is wrong in the other and the test is slow. Polling against a
-// deadline is correct in both cases, and the last observed error is reported
-// when the deadline expires, which is the difference between "timed out" and a
-// diagnosis.
+// It exists so no test in this repository reaches for time.Sleep: a sleep
+// encodes a guess about how long a cluster takes to converge, and that guess is
+// wrong on a loaded CI runner in one direction and on a fast machine in the
+// other.
 package wait
 
 import (
@@ -17,25 +14,20 @@ import (
 )
 
 // ErrDeadline is returned when the context expires before the condition holds.
-// Callers that need to distinguish a timeout from a hard failure branch on it
-// with errors.Is.
 var ErrDeadline = errors.New("wait: deadline exceeded")
 
 // ConditionFunc reports whether the awaited state has been reached.
 //
-// Returning (false, nil) means "not yet, keep polling". Returning a non-nil
-// error aborts the wait immediately: use it for conditions that can never
-// become true, such as a resource that has entered a terminal failed phase.
-// A transient error from the API server should be reported as (false, nil)
-// with the error recorded via Describe, not returned.
+// (false, nil) means "not yet, keep polling". A non-nil error aborts the wait
+// immediately, so it is for conditions that can never become true — a resource
+// in a terminal failed phase. Report a transient API error as (false, nil).
 type ConditionFunc func(ctx context.Context) (bool, error)
 
-// For polls fn every interval until it reports true, it returns an error, or
-// ctx is done. The condition is evaluated once before the first tick, so a
-// condition that already holds costs nothing.
+// For polls fn every interval until it reports true, returns an error, or ctx
+// is done. The condition is evaluated once before the first tick.
 //
-// On expiry the returned error wraps ErrDeadline and names what was being
-// awaited, so a failing e2e run says which object never converged.
+// On expiry the error wraps ErrDeadline and names what was awaited, so a failing
+// e2e run says which object never converged.
 func For(ctx context.Context, interval time.Duration, what string, fn ConditionFunc) error {
 	if interval <= 0 {
 		return fmt.Errorf("wait for %s: interval must be positive, got %v", what, interval)
@@ -68,13 +60,11 @@ func For(ctx context.Context, interval time.Duration, what string, fn ConditionF
 	}
 }
 
-// Stable polls until fn has reported true continuously for the whole of
-// settle, and fails if the condition ever flaps back to false.
+// Stable polls until fn has reported true continuously for the whole of settle.
 //
-// Cluster state converges and then unconverges: a Deployment reports Available
-// before its second replica is scheduled, and a DRBD volume reports UpToDate
-// mid-resync. Asserting on the first true reading turns those races into
-// intermittent green builds, which is worse than a red one.
+// Cluster state converges and then unconverges — a DRBD volume reports UpToDate
+// mid-resync — so accepting the first true reading turns those races into
+// intermittently green builds.
 func Stable(ctx context.Context, interval, settle time.Duration, what string, fn ConditionFunc) error {
 	if settle <= 0 {
 		return fmt.Errorf("wait for stable %s: settle must be positive, got %v", what, settle)

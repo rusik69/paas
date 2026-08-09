@@ -1,19 +1,20 @@
-# The two durable StorageClasses named in architecture.md §8, plus the scratch
-# class that must never be used for anything a tenant would miss.
+# The two durable classes from architecture.md §8, plus the scratch class that
+# must never hold anything a tenant would miss.
+#
+# WaitForFirstConsumer throughout: with Immediate, the volume is placed before
+# the scheduler picks a node, and the pod then lands somewhere without a local
+# replica — every read crosses the network for the life of the volume.
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: replicated-3
   annotations:
-    # Everything durable defaults here. A tenant who does not choose gets the
-    # safe option; making the cheap option the default is how data is lost.
+    # A tenant who does not choose gets the safe option. Making the cheap one
+    # the default is how data is lost.
     storageclass.kubernetes.io/is-default-class: "true"
     paas.io/durability: replicated
 provisioner: linstor.csi.linbit.com
-# WaitForFirstConsumer: with Immediate, the volume is placed before the
-# scheduler picks a node, and the pod then lands somewhere without a local
-# replica — every read crosses the network for the life of the volume.
 volumeBindingMode: WaitForFirstConsumer
 allowVolumeExpansion: true
 reclaimPolicy: Delete
@@ -44,8 +45,7 @@ kind: StorageClass
 metadata:
   name: scratch
   annotations:
-    # Read by the phase-3 catalog generator. A class without this annotation is
-    # assumed durable, so the label goes on at creation, not later.
+    # Read by the phase-3 catalog generator, which assumes durable when absent.
     paas.io/durability: non-durable
 provisioner: linstor.csi.linbit.com
 volumeBindingMode: WaitForFirstConsumer

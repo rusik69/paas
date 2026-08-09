@@ -4,14 +4,10 @@
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export REPO_ROOT
 
-# All generated state lives here and is gitignored. Deleting this directory plus
-# `e2e.sh down` returns the machine to a clean state.
 E2E_DIR="${E2E_DIR:-${REPO_ROOT}/.e2e}"
 export E2E_DIR
 export KUBECONFIG="${KUBECONFIG:-${E2E_DIR}/kubeconfig}"
 export TALOSCONFIG="${TALOSCONFIG:-${E2E_DIR}/talosconfig}"
-
-# --- output ------------------------------------------------------------------
 
 _ts() { date -u +%H:%M:%S; }
 log() { printf '\033[1;34m[%s] ==>\033[0m %s\n' "$(_ts)" "$*"; }
@@ -21,8 +17,6 @@ die() {
 	printf '\033[1;31m[%s] error:\033[0m %s\n' "$(_ts)" "$*" >&2
 	exit 1
 }
-
-# --- preconditions -----------------------------------------------------------
 
 require_tools() {
 	local missing=()
@@ -35,13 +29,10 @@ require_libvirt() {
 		die "cannot reach libvirt at $LIBVIRT_URI — is libvirtd running, and are you in the 'libvirt' group?"
 }
 
-# --- retry -------------------------------------------------------------------
-
-# retry <attempts> <sleep-seconds> <description> -- <command...>
+# retry <attempts> <delay> <description> -- <command...>
 #
-# Talos and Kubernetes both spend their first minutes returning connection
-# errors that are indistinguishable from real faults, so every command aimed at
-# a booting cluster goes through here. The last failure's output is printed on
+# Talos and Kubernetes spend their first minutes returning connection errors
+# indistinguishable from real faults. The last failure's output is printed on
 # give-up; swallowing it turns a five-minute bring-up into a blind one.
 retry() {
 	local attempts="$1" delay="$2" what="$3"
@@ -64,7 +55,4 @@ retry() {
 	done
 }
 
-# --- misc --------------------------------------------------------------------
-
-# indent stdin, so nested tool output is visually distinct from our own logs.
 indent() { sed 's/^/    /'; }

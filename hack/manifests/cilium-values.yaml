@@ -1,28 +1,26 @@
 # Cilium values for Talos. See ADR 0002 — Cilium is the only dataplane.
 #
-# Every block below is here because Talos differs from a generic distro in a way
-# that breaks the Cilium defaults. Removing one produces a cluster where pods
-# start but networking silently does not work.
+# Every block is here because Talos differs from a generic distro in a way that
+# breaks the Cilium defaults. Removing one produces a cluster where pods start
+# but networking silently does not work.
 
 ipam:
   mode: kubernetes
 
-# Talos runs no kube-proxy (cluster.proxy.disabled). Cilium must therefore
-# provide service load balancing itself, and must be told where the API server
-# is, because the in-cluster Service IP does not resolve until Cilium is up.
+# Talos runs no kube-proxy, and the in-cluster Service IP does not resolve until
+# Cilium is up, so it must be told where the API server is.
 kubeProxyReplacement: true
 k8sServiceHost: localhost
 k8sServicePort: 7445 # Talos KubePrism
 
-# Talos mounts the cgroup2 hierarchy itself and its root filesystem is
-# read-only, so Cilium's automount init container cannot do its usual work.
+# Talos mounts cgroup2 itself and its root filesystem is read-only, so Cilium's
+# automount init container cannot do its usual work.
 cgroup:
   autoMount:
     enabled: false
   hostRoot: /sys/fs/cgroup
 
-# Talos applies Pod Security Admission and grants no ambient capabilities.
-# These lists are the minimum each container actually needs.
+# Talos grants no ambient capabilities. These are the minimum each needs.
 securityContext:
   capabilities:
     ciliumAgent:
@@ -42,15 +40,15 @@ securityContext:
       - SYS_ADMIN
       - SYS_RESOURCE
 
-# Gateway API is the ingress path for the app plane (phase 4). Enabling it in
-# phase 0 costs nothing and means the routing layer is never retrofitted.
-# Requires the Gateway API CRDs, installed by e2e.sh before this chart.
+# The ingress path for the app plane (phase 4). Enabling it now costs nothing
+# and means the routing layer is never retrofitted. Requires the Gateway API
+# CRDs, installed by e2e.sh before this chart.
 gatewayAPI:
   enabled: true
 
 # Hubble flow metrics become per-tenant egress bytes for billing in phase 6.
-# The label set is deliberately namespace-scoped: per-pod flow labels multiply
-# series count by pod churn and will melt Prometheus at 200 tenants.
+# Namespace-scoped deliberately: per-pod flow labels multiply series count by
+# pod churn and will melt Prometheus at 200 tenants.
 hubble:
   enabled: true
   relay:
@@ -60,16 +58,6 @@ hubble:
       - "flow:sourceContext=namespace;destinationContext=namespace"
       - "drop:sourceContext=namespace;destinationContext=namespace"
 
-# Required for CiliumNetworkPolicy to express the phase-2 default-deny rules
-# that name namespaces and cluster-external CIDRs.
-policyEnforcementMode: default
-
-# Three nodes, one of which is a control plane that runs no workloads. The
-# defaults assume far more headroom than a 14 GB laptop has.
+# Default is 2, and this cluster has one control plane that runs no workloads.
 operator:
   replicas: 1
-
-# The e2e cluster has no BGP peer. Real hardware turns this on in phase 5;
-# keeping the flag visible here documents where it goes.
-bgpControlPlane:
-  enabled: false

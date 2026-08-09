@@ -1,17 +1,12 @@
-# Control-plane-only machine-config patch.
-cluster:
-  allowSchedulingOnControlPlanes: false
-  apiServer:
-    # KubePrism (localhost:7445) is how Cilium reaches the API server before
-    # Cilium itself is providing service networking — the bootstrap chicken and
-    # egg. It is enabled by default on recent Talos; asserted here so a version
-    # bump that changes the default fails loudly rather than at Cilium install.
-    extraArgs: {}
-  etcd:
-    advertisedSubnets:
-      - "${E2E_SUBNET}"
 machine:
   features:
+    # How Cilium reaches the API server before Cilium is providing service
+    # networking — the bootstrap chicken and egg.
     kubePrism:
       enabled: true
       port: 7445
+cluster:
+  allowSchedulingOnControlPlanes: false
+  etcd:
+    advertisedSubnets:
+      - "${E2E_SUBNET}"

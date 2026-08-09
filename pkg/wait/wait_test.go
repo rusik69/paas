@@ -3,6 +3,7 @@ package wait_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -47,7 +48,6 @@ func TestFor_PollsUntilConditionHolds(t *testing.T) {
 		if err != nil {
 			t.Fatalf("For() = %v, want nil", err)
 		}
-		// One immediate evaluation plus two ticks.
 		if want := 200 * time.Millisecond; time.Since(start) != want {
 			t.Errorf("elapsed = %v, want %v", time.Since(start), want)
 		}
@@ -70,8 +70,8 @@ func TestFor_DeadlineExceededNamesWhatWasAwaited(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("For() = %v, want error wrapping context.DeadlineExceeded", err)
 		}
-		if got, want := err.Error(), "pvc/data to bind"; !contains(got, want) {
-			t.Errorf("error %q does not name what was awaited (%q)", got, want)
+		if got := err.Error(); !strings.Contains(got, "pvc/data to bind") {
+			t.Errorf("error %q does not name what was awaited", got)
 		}
 	})
 }
@@ -107,6 +107,16 @@ func TestFor_RejectsNonPositiveInterval(t *testing.T) {
 	}
 }
 
+func TestStable_RejectsNonPositiveSettle(t *testing.T) {
+	t.Parallel()
+
+	if err := wait.Stable(t.Context(), time.Second, 0, "x", func(context.Context) (bool, error) {
+		return true, nil
+	}); err == nil {
+		t.Error("Stable(settle=0) = nil, want error")
+	}
+}
+
 func TestStable_RejectsAConditionThatFlaps(t *testing.T) {
 	t.Parallel()
 
@@ -114,8 +124,8 @@ func TestStable_RejectsAConditionThatFlaps(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 		defer cancel()
 
-		// True, then false, then true forever: a volume that reports UpToDate
-		// before resync completes. Stable must not accept the first reading.
+		// True, then false, then true forever: a volume reporting UpToDate
+		// before resync completes.
 		calls := 0
 		err := wait.Stable(ctx, 100*time.Millisecond, time.Second, "volume uptodate",
 			func(context.Context) (bool, error) {
@@ -125,7 +135,6 @@ func TestStable_RejectsAConditionThatFlaps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Stable() = %v, want nil", err)
 		}
-		// The settle window can only have started at or after the flap.
 		if calls < 12 {
 			t.Errorf("condition calls = %d, want >= 12 — settle window restarted too early", calls)
 		}
@@ -151,11 +160,15 @@ func TestStable_TimesOutWhenNeverStable(t *testing.T) {
 	})
 }
 
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
+func TestStable_PropagatesTerminalError(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		terminal := errors.New("resource deleted")
+		err := wait.Stable(t.Context(), time.Second, time.Second, "gone",
+			func(context.Context) (bool, error) { return false, terminal })
+		if !errors.Is(err, terminal) {
+			t.Fatalf("Stable() = %v, want error wrapping %v", err, terminal)
 		}
-	}
-	return false
+	})
 }
