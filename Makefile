@@ -15,6 +15,10 @@ E2E_TIMEOUT  ?= 45m
 # and not evidence that the tests are good.
 COVERAGE_MIN ?= 95
 
+# hack/versions.sh is the only place a version may live, so read the go-run tool
+# pins back out of it. Lazy `=`, so a target that needs none spawns no shell.
+pin = $(shell source hack/versions.sh && printf '%s' "$${$(1)}")
+
 .PHONY: help
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*##"; printf "\nTargets:\n"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -44,7 +48,7 @@ vet-e2e: ## The e2e suite is behind a build tag and invisible to `make test`
 
 .PHONY: actionlint
 actionlint: ## Lint the GitHub Actions workflows
-	$(GO) run github.com/rhysd/actionlint/cmd/actionlint@latest
+	$(GO) run github.com/rhysd/actionlint/cmd/actionlint@$(call pin,ACTIONLINT_VERSION)
 
 .PHONY: lint
 lint: ## golangci-lint, configured by .golangci.yml
@@ -52,9 +56,13 @@ lint: ## golangci-lint, configured by .golangci.yml
 	golangci-lint run
 
 .PHONY: fmt
-fmt: ## gofumpt + shfmt
+fmt: ## gofumpt + shfmt, writing in place
 	@command -v gofumpt >/dev/null && gofumpt -l -w . || echo "gofumpt not installed, skipping"
-	@command -v shfmt >/dev/null && shfmt -w -ln bash hack/*.sh || echo "shfmt not installed, skipping"
+	$(GO) run mvdan.cc/sh/v3/cmd/shfmt@$(call pin,SHFMT_VERSION) -w -ln bash hack/*.sh
+
+.PHONY: shfmt
+shfmt: ## Shell formatting, the read-only check CI runs
+	$(GO) run mvdan.cc/sh/v3/cmd/shfmt@$(call pin,SHFMT_VERSION) -d -ln bash hack/*.sh
 
 .PHONY: check-stdout
 check-stdout: ## hack/lib.sh progress must not reach stdout, or it lands in a captured return value
@@ -69,7 +77,7 @@ shellcheck: ## Lint the provisioning scripts
 
 .PHONY: vuln
 vuln: ## govulncheck — blocks merge in CI
-	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@$(call pin,GOVULNCHECK_VERSION) ./...
 
 .PHONY: verify
 verify: vet vet-e2e lint cover check-stdout ## Everything that must pass before pushing

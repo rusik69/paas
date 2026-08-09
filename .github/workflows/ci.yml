@@ -84,7 +84,7 @@ jobs:
         run: make check-stdout
 
       - name: shell formatting
-        run: go run mvdan.cc/sh/v3/cmd/shfmt@latest -d -ln bash hack/*.sh
+        run: make shfmt
 
       - name: workflow lint
         # This file is itself a deliverable and nothing else type-checks it.

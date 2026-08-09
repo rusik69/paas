@@ -11,6 +11,13 @@ TALOSCTL_VERSION="${TALOSCTL_VERSION:-v1.11.2}"
 FLUX_VERSION="${FLUX_VERSION:-2.7.2}" # no leading v; flux release assets omit it
 GOLANGCI_VERSION="${GOLANGCI_VERSION:-v2.12.2}"
 
+# Run through `go run`, so these are module versions rather than downloads.
+# `@latest` for any of them turns an upstream release into a red build nobody
+# caused, on a change the tool had no opinion about the day before.
+ACTIONLINT_VERSION="${ACTIONLINT_VERSION:-v1.7.12}"
+SHFMT_VERSION="${SHFMT_VERSION:-v3.13.1}"
+GOVULNCHECK_VERSION="${GOVULNCHECK_VERSION:-v1.6.0}"
+
 TALOS_VERSION="${TALOS_VERSION:-v1.11.2}" # must match TALOSCTL_VERSION
 KUBERNETES_VERSION="${KUBERNETES_VERSION:-v1.34.1}"
 CILIUM_VERSION="${CILIUM_VERSION:-1.18.12}" # helm chart version
@@ -66,6 +73,9 @@ versions_check() {
 	_check_url piraeus "https://github.com/piraeusdatastore/piraeus-operator/releases/tag/${PIRAEUS_VERSION}" || rc=1
 	_check_zot || rc=1
 	_check_url crane "https://github.com/google/go-containerregistry/releases/tag/${CRANE_VERSION}" || rc=1
+	_check_url actionlint "https://github.com/rhysd/actionlint/releases/tag/${ACTIONLINT_VERSION}" || rc=1
+	_check_url shfmt "https://github.com/mvdan/sh/releases/tag/${SHFMT_VERSION}" || rc=1
+	_check_url govulncheck "https://github.com/golang/vuln/releases/tag/${GOVULNCHECK_VERSION}" || rc=1
 
 	# Buffered rather than piped into grep: under `set -o pipefail`, grep -q
 	# exiting early makes curl fail with SIGPIPE and the chart reads as missing.
