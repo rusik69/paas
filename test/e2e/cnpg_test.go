@@ -25,7 +25,25 @@ var clusterGVR = schema.GroupVersionResource{
 // machinery carries a real upstream component and not only the fixtures phase 1
 // was proven with.
 func TestCNPG_OperatorIsDeliveredByThePlatform(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Minute)
+	// Ensures the release rather than assuming another test has: Go runs these
+	// in file order, and depending on that made this fail for ten minutes
+	// against a cluster where nothing had ever asked for CNPG.
+	setPlatformVersion(t, "v0.1.0")
+
+	waitCNPGOperator(t, 10*time.Minute)
+
+	// The CRD the tenant-facing Postgres kind will be built on in phase 3.
+	if _, err := dynClient.Resource(clusterGVR).Namespace("default").
+		List(t.Context(), metav1.ListOptions{}); err != nil {
+		t.Errorf("the cnpg Cluster kind is not served: %v", err)
+	}
+}
+
+// waitCNPGOperator waits for the operator the platform release installs.
+func waitCNPGOperator(t *testing.T, timeout time.Duration) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 
 	var last string
@@ -50,18 +68,15 @@ func TestCNPG_OperatorIsDeliveredByThePlatform(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v (last: %s)", err, last)
 	}
-
-	// The CRD the tenant-facing Postgres kind will be built on in phase 3.
-	if _, err := dynClient.Resource(clusterGVR).Namespace("default").
-		List(t.Context(), metav1.ListOptions{}); err != nil {
-		t.Errorf("the cnpg Cluster kind is not served: %v", err)
-	}
 }
 
 // A real database on replicated storage, which is what Keycloak needs and what
 // makes CNPG worth delivering at all. Asserting the operator is running proves
 // far less: an operator that reconciles nothing looks identical.
 func TestCNPG_ClusterBecomesReadyOnReplicatedStorage(t *testing.T) {
+	setPlatformVersion(t, "v0.1.0")
+	waitCNPGOperator(t, 10*time.Minute)
+
 	ns := namespace(t, "e2e-cnpg")
 
 	cluster := &unstructured.Unstructured{Object: map[string]any{
