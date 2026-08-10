@@ -1,0 +1,6 @@
+dependencies:
+- name: keycloakx
+  repository: ""
+  version: 7.2.2
+digest: sha256:1e64a02dded3f5508d26acae03805c5a02f8579cf484cc5d71f6ed72cf88cf74
+generated: "2026-08-10T20:04:53.970422623+02:00"

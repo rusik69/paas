@@ -39,6 +39,12 @@ CRANE_VERSION="${CRANE_VERSION:-v0.21.9}" # e2e only: pushes a fixture image
 CNPG_CHART_VERSION="${CNPG_CHART_VERSION:-0.29.0}"
 CNPG_VERSION="${CNPG_VERSION:-1.30.0}"
 
+# Keycloak, vendored under packages/system/keycloak. codecentric's chart rather
+# than Bitnami's: it runs the official quay.io/keycloak image, where Bitnami's
+# catalogue moved behind a subscription in 2025.
+KEYCLOAK_CHART_VERSION="${KEYCLOAK_CHART_VERSION:-7.2.2}"
+KEYCLOAK_VERSION="${KEYCLOAK_VERSION:-26.6.4}"
+
 # Pinned to what Cilium 1.18 declares conformance against. A newer Gateway API
 # installs CRDs with fields the Cilium operator does not understand, and it
 # reports that as a GatewayClass reconcile error rather than a version mismatch.
@@ -88,6 +94,7 @@ versions_check() {
 	_check_zot || rc=1
 	_check_url crane "https://github.com/google/go-containerregistry/releases/tag/${CRANE_VERSION}" || rc=1
 	_check_url cnpg "https://github.com/cloudnative-pg/cloudnative-pg/releases/tag/v${CNPG_VERSION}" || rc=1
+	_check_url keycloak "https://github.com/keycloak/keycloak/releases/tag/${KEYCLOAK_VERSION}" || rc=1
 	_check_url actionlint "https://github.com/rhysd/actionlint/releases/tag/${ACTIONLINT_VERSION}" || rc=1
 	_check_url shfmt "https://github.com/mvdan/sh/releases/tag/${SHFMT_VERSION}" || rc=1
 	_check_url govulncheck "https://github.com/golang/vuln/releases/tag/${GOVULNCHECK_VERSION}" || rc=1

@@ -1,0 +1,12 @@
+apiVersion: v2
+name: keycloak
+description: >-
+  Keycloak and the CloudNativePG database it runs on. Umbrella over the vendored
+  upstream chart, so upstream updates stay a re-vendor rather than a merge.
+type: application
+version: 0.1.0
+appVersion: "26.6.4"
+dependencies:
+  - name: keycloakx
+    version: 7.2.2
+    repository: ""

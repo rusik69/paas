@@ -14,6 +14,13 @@ packages:
     version: "0.1.0"
     stage: component
 
+  # The platform's identity provider, and the database it needs — which is why
+  # CloudNativePG above is a component rather than a phase-3 concern.
+  - name: keycloak
+    chart: keycloak
+    version: "0.1.0"
+    stage: component
+
   - name: hello-migrate
     chart: hello-migrate
     version: "0.1.0"

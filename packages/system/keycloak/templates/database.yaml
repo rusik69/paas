@@ -1,0 +1,30 @@
+{{- /*
+  Keycloak's database, declared beside it rather than as a separate package.
+
+  One chart because the ordering is already solved inside it: the vendored
+  chart's dbchecker init container waits for Postgres to accept connections, so
+  Keycloak simply does not start until the database is up. Splitting them into
+  a migration and a component stage would express the same thing less
+  reliably — helm-controller reports a release Ready when the install
+  succeeded, not when a CloudNativePG Cluster inside it became healthy.
+*/ -}}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Chart.Name }}-db
+  namespace: {{ .Release.Namespace }}
+spec:
+  instances: {{ .Values.database.instances }}
+  storage:
+    size: {{ .Values.database.size | quote }}
+    storageClass: {{ .Values.database.storageClass | quote }}
+  resources:
+    requests:
+      cpu: {{ .Values.database.resources.requests.cpu | quote }}
+      memory: {{ .Values.database.resources.requests.memory | quote }}
+  bootstrap:
+    initdb:
+      # Named, because the vendored chart is pointed at these and CloudNativePG
+      # derives the generated Secret's contents from them.
+      database: keycloak
+      owner: keycloak

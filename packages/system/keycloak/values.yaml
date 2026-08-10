@@ -1,0 +1,43 @@
+# The database CloudNativePG provisions for Keycloak.
+database:
+  # One instance: this is the platform's own identity provider on a three-node
+  # dev cluster, and DRBD already replicates the volume underneath it. High
+  # availability for the control plane's own database is its own phase.
+  instances: 1
+  size: 2Gi
+  storageClass: replicated-3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+# Values reaching the vendored chart. Everything the platform decides lives
+# here, so the vendored directory stays a verbatim copy of upstream.
+keycloakx:
+  command:
+    # start-dev rather than start: it skips the hostname and TLS requirements a
+    # production start enforces, which is what lets this serve over HTTP inside
+    # the cluster while the API server's OIDC trust is still to be wired up.
+    - "/opt/keycloak/bin/kc.sh"
+    - "start-dev"
+    - "--http-enabled=true"
+
+  # Waits for Postgres to accept connections, which is why the database can live
+  # in the same chart without an ordering stage.
+  dbchecker:
+    enabled: true
+
+  database:
+    vendor: postgres
+    hostname: keycloak-db-rw
+    port: 5432
+    database: keycloak
+    # The Secret CloudNativePG generates for the owner declared above.
+    existingSecret: keycloak-db-app
+    existingSecretKey: password
+    username: keycloak
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi

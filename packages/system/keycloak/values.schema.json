@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instances": {"type": "integer", "minimum": 1},
+        "size": {"type": "string"},
+        "storageClass": {"type": "string"},
+        "resources": {"type": "object", "additionalProperties": true}
+      }
+    },
+    "keycloakx": {
+      "type": "object",
+      "description": "Passed through to the vendored upstream chart.",
+      "additionalProperties": true
+    }
+  }
+}
