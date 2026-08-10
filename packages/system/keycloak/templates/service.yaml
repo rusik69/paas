@@ -1,0 +1,31 @@
+{{- /*
+  A Service with a pinned ClusterIP, separate from the chart's own.
+
+  The API server runs in the host network namespace and has no cluster DNS, so
+  the OIDC issuer URL has to be an address it can dial directly. Cilium's socket
+  load balancer makes a ClusterIP reachable from that namespace — the same
+  mechanism the registry relies on at 10.96.0.30, proven by
+  TestRegistry_ClusterIPReachableFromHostNetwork.
+
+  Pinned rather than allocated, because the address appears in three places that
+  must agree: this Service, the API server's --oidc-issuer-url, and the SAN of
+  the certificate Keycloak serves.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Chart.Name }}-oidc
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: keycloak-oidc
+spec:
+  type: ClusterIP
+  clusterIP: {{ .Values.oidc.clusterIP | quote }}
+  selector:
+    app.kubernetes.io/name: keycloakx
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: https
+      port: {{ .Values.oidc.port }}
+      targetPort: https
+      protocol: TCP

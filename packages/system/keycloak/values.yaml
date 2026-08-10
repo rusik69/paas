@@ -11,16 +11,60 @@ database:
       cpu: 100m
       memory: 256Mi
 
+# The OIDC identity the API server is configured to trust. Every value here
+# appears somewhere else too and must agree: clusterIP with the certificate SAN
+# and the API server's issuer URL, realm and clientId with its --oidc-* flags.
+oidc:
+  clusterIP: 10.96.0.31
+  port: 8443
+  realm: paas
+  clientId: kubernetes
+  # A fixture identity, for the e2e that proves a token maps to a tenant role.
+  # Not a credential worth protecting: it exists only on a cluster the test
+  # created and destroys.
+  testUser: alice
+  testPassword: alice-password
+
 # Values reaching the vendored chart. Everything the platform decides lives
 # here, so the vendored directory stays a verbatim copy of upstream.
 keycloakx:
   command:
-    # start-dev rather than start: it skips the hostname and TLS requirements a
-    # production start enforces, which is what lets this serve over HTTP inside
-    # the cluster while the API server's OIDC trust is still to be wired up.
+    # start-dev keeps the relaxed hostname checks a production start enforces,
+    # while the TLS below is what makes the issuer usable: Kubernetes requires an
+    # HTTPS issuer, so serving plain HTTP was never going to be enough.
     - "/opt/keycloak/bin/kc.sh"
     - "start-dev"
     - "--http-enabled=true"
+    - "--import-realm"
+
+  extraEnv: |
+    - name: KC_HTTPS_CERTIFICATE_FILE
+      value: /opt/keycloak/tls/tls.crt
+    - name: KC_HTTPS_CERTIFICATE_KEY_FILE
+      value: /opt/keycloak/tls/tls.key
+    # Must match --oidc-issuer-url exactly. Keycloak stamps this into every
+    # token's iss claim, and the API server rejects a token whose issuer differs
+    # by so much as a port.
+    - name: KC_HOSTNAME
+      value: "https://10.96.0.31:8443"
+    - name: KC_HOSTNAME_STRICT
+      value: "false"
+
+  extraVolumes: |
+    - name: tls
+      secret:
+        secretName: keycloak-tls
+    - name: realm
+      configMap:
+        name: keycloak-realm
+
+  extraVolumeMounts: |
+    - name: tls
+      mountPath: /opt/keycloak/tls
+      readOnly: true
+    - name: realm
+      mountPath: /opt/keycloak/data/import
+      readOnly: true
 
   http:
     # Keycloak has served at the root since v17; the chart still defaults to the

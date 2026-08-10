@@ -13,6 +13,18 @@
         "resources": {"type": "object", "additionalProperties": true}
       }
     },
+    "oidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "clusterIP": {"type": "string"},
+        "port": {"type": "integer"},
+        "realm": {"type": "string"},
+        "clientId": {"type": "string"},
+        "testUser": {"type": "string"},
+        "testPassword": {"type": "string"}
+      }
+    },
     "keycloakx": {
       "type": "object",
       "description": "Passed through to the vendored upstream chart.",

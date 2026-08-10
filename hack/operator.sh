@@ -65,6 +65,24 @@ cmd_publish() {
 	fi
 }
 
+# The serving certificate Keycloak presents at the pinned ClusterIP, from the CA
+# the API server was told to trust. Created here rather than by the chart because
+# it is generated at bring-up: a chart cannot carry a key that does not exist
+# until the cluster does.
+cmd_oidc_secret() {
+	require_tools kubectl
+	local dir="${REPO_ROOT}/.e2e/oidc"
+	[[ -s "${dir}/tls.crt" && -s "${dir}/tls.key" ]] ||
+		die "${dir} has no serving certificate; run 'make cluster-up' first"
+
+	step "installing the OIDC serving certificate"
+	kubectl create namespace "$REGISTRY_NAMESPACE" >/dev/null 2>&1 || true
+	kubectl -n "$REGISTRY_NAMESPACE" create secret tls keycloak-tls \
+		--cert="${dir}/tls.crt" --key="${dir}/tls.key" \
+		--dry-run=client -o yaml | kubectl apply -f - >/dev/null
+	log "keycloak-tls in ${REGISTRY_NAMESPACE}"
+}
+
 cmd_deploy() {
 	require_tools kubectl envsubst
 	step "deploying the operator"
@@ -115,12 +133,14 @@ cmd_e2e_releases() {
 
 cmd_all() {
 	cmd_image
+	cmd_oidc_secret
 	cmd_deploy
 	cmd_e2e_releases
 }
 
 case "${1:-}" in
 image) cmd_image ;;
+oidc-secret) cmd_oidc_secret ;;
 releases) cmd_e2e_releases ;;
 deploy) cmd_deploy ;;
 publish)
@@ -129,7 +149,7 @@ publish)
 	;;
 all) cmd_all ;;
 *)
-	echo "usage: $0 {image|deploy|publish <version> [manifest]|releases|all}" >&2
+	echo "usage: $0 {image|oidc-secret|deploy|publish <version> [manifest]|releases|all}" >&2
 	exit 2
 	;;
 esac

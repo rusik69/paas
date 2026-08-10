@@ -1,0 +1,60 @@
+{{- /*
+  The realm, imported at startup rather than configured by hand.
+
+  Two details here are load-bearing and silent when wrong:
+
+    - the group membership mapper. Keycloak puts no group claim in tokens
+      without one, so every paas:tenant:* RoleBinding would match nothing and
+      nothing would say so.
+    - full.path false. With it true the claim carries "/paas:tenant:acme", and
+      the bindings name "paas:tenant:acme" — a leading slash is enough to make
+      every authorization decision come out empty.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Chart.Name }}-realm
+  namespace: {{ .Release.Namespace }}
+data:
+  paas-realm.json: |
+    {
+      "realm": {{ .Values.oidc.realm | quote }},
+      "enabled": true,
+      "groups": [
+        {"name": "paas:tenant:acme"}
+      ],
+      "clients": [
+        {
+          "clientId": {{ .Values.oidc.clientId | quote }},
+          "enabled": true,
+          "publicClient": true,
+          "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": true,
+          "protocolMappers": [
+            {
+              "name": "groups",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-group-membership-mapper",
+              "config": {
+                "claim.name": "groups",
+                "full.path": "false",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true"
+              }
+            }
+          ]
+        }
+      ],
+      "users": [
+        {
+          "username": {{ .Values.oidc.testUser | quote }},
+          "enabled": true,
+          "emailVerified": true,
+          "credentials": [
+            {"type": "password", "value": {{ .Values.oidc.testPassword | quote }}}
+          ],
+          "groups": ["/paas:tenant:acme"]
+        }
+      ]
+    }
