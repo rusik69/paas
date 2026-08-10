@@ -27,6 +27,11 @@ const FieldManager = "paas-operator/platform"
 // ReleaseInterval is how often helm-controller re-checks a release.
 const ReleaseInterval = 10 * time.Minute
 
+// InstallRetries is how many times a failed release is retried before it is
+// left alone. Negative means forever, which is wrong: a release that is broken
+// rather than early should end up visibly failed rather than churning.
+const InstallRetries = 3
+
 // PlatformLabel groups the Packages belonging to one platform release. It is
 // what makes "every migration in the same release" answerable with a List.
 const PlatformLabel = "platform.paas.io/platform"
@@ -126,7 +131,17 @@ func (r *Reconciler) desired(p *v1alpha1.Package, deps []helmv2.DependencyRefere
 			// deleted by hand takes its Helm history with it instead of leaving
 			// state that disagrees with the cluster.
 			StorageNamespace: TargetNamespace,
-			Install:          &helmv2.Install{CreateNamespace: true},
+			// Retried, not terminal. A component whose admission webhook is not
+			// serving yet fails its install once and would otherwise stay
+			// failed forever, with nothing retrying it — helm-controller's
+			// default remediation is none.
+			Install: &helmv2.Install{
+				CreateNamespace: true,
+				Remediation:     &helmv2.InstallRemediation{Retries: InstallRetries},
+			},
+			Upgrade: &helmv2.Upgrade{
+				Remediation: &helmv2.UpgradeRemediation{Retries: InstallRetries},
+			},
 			Chart: &helmv2.HelmChartTemplate{
 				Spec: helmv2.HelmChartTemplateSpec{
 					Chart:   p.Spec.Chart,

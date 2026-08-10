@@ -136,3 +136,29 @@ func TestPackage_ReleasesTargetThePlatformNamespace(t *testing.T) {
 		t.Error("install.createNamespace is not set; the first release into a fresh cluster would fail")
 	}
 }
+
+// A component whose admission webhook is not serving yet fails its install
+// once. helm-controller's default remediation is none, so without retries that
+// release stays failed forever with nothing coming back to it — which is how
+// Keycloak sat in Init for fifteen minutes behind a CNPG webhook that was
+// ready thirty seconds later.
+func TestPackage_ReleasesAreRetried(t *testing.T) {
+	p := newPackage("retried", "rel-retry", v1alpha1.StageComponent)
+	mustCreate(t, p)
+	reconcile(t, p.Name, packageReconciler())
+
+	hr := helmRelease(t, p.Name)
+	if hr.Spec.Install == nil || hr.Spec.Install.Remediation == nil ||
+		hr.Spec.Install.Remediation.Retries == 0 {
+		t.Error("install has no retries; a release that failed once would stay failed")
+	}
+	if hr.Spec.Upgrade == nil || hr.Spec.Upgrade.Remediation == nil ||
+		hr.Spec.Upgrade.Remediation.Retries == 0 {
+		t.Error("upgrade has no retries")
+	}
+	// Not infinite: a genuinely broken release should end up visibly failed
+	// rather than churning forever.
+	if hr.Spec.Install.Remediation.Retries < 0 {
+		t.Error("install retries are infinite; a broken release would never surface as failed")
+	}
+}

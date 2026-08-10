@@ -98,7 +98,7 @@ cmd_e2e_releases() {
 		  - name: cnpg
 		    chart: cnpg
 		    version: "0.1.0"
-		    stage: component
+		    stage: migration
 		  - name: keycloak
 		    chart: keycloak
 		    version: "0.1.0"

@@ -12,7 +12,11 @@ packages:
   - name: cnpg
     chart: cnpg
     version: "0.1.0"
-    stage: component
+    # migration, not component: it provides the Cluster CRD and the admission
+    # webhook that keycloak's own manifests need, so it has to be Ready before
+    # anything that declares one is installed. That is what the stage is for —
+    # things that must land before the components that depend on them.
+    stage: migration
 
   # The platform's identity provider, and the database it needs — which is why
   # CloudNativePG above is a component rather than a phase-3 concern.
