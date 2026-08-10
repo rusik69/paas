@@ -14,6 +14,8 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/rusik69/paas/internal/controller/platform"
 	"github.com/rusik69/paas/internal/crd"
@@ -24,11 +26,22 @@ import (
 func main() {
 	installTimeout := flag.Duration("install-timeout", 5*time.Minute,
 		"how long to wait for the CRDs and Flux to install before giving up")
+	// zap's own flags, so verbosity is a deployment concern rather than a
+	// rebuild: -zap-log-level=debug turns on the V(1) reconcile detail
+	// go-guidelines reserves for it.
+	zapOpts := zap.Options{Development: false}
+	zapOpts.BindFlags(flag.CommandLine)
+
 	metricsAddress := flag.String("metrics-bind-address", ":8080",
 		`address the metrics endpoint binds to; "0" disables it`)
 	insecureRegistry := flag.Bool("insecure-registry", true,
 		"pull release artifacts over plain HTTP; the in-cluster registry speaks it")
 	flag.Parse()
+
+	// Before anything that might log. Without it controller-runtime discards
+	// every line and says so once, which is how an operator ends up with no
+	// logs at all during an incident.
+	ctrllog.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
 
 	if err := run(*installTimeout, *metricsAddress, *insecureRegistry); err != nil {
 		fmt.Fprintf(os.Stderr, "paas-operator: %v\n", err)

@@ -108,6 +108,9 @@ that rolling back restores it.)*
 
 **Done when:** two nested tenants exist, the child inherits its parent's monitoring, and a
 negative network test proves cross-tenant traffic and pod→apiserver access both fail.
+*(Met by `TestTenancy_NestedTenantsAreIsolatedAndInheritModules`, with positive controls —
+same-namespace traffic and the opt-in label — so the denials cannot pass by everything being
+unreachable. OIDC, RBAC bindings and the kubeconfig Secret are still outstanding.)*
 
 ### Phase 3 — Managed services
 
