@@ -21,6 +21,26 @@ spec:
     - key: node-role.kubernetes.io/control-plane
       operator: Exists
       effect: NoSchedule
+  # The storage control plane must not live on a node whose loss it has to
+  # survive. Found the hard way: with these free to land on a worker, killing the
+  # node holding a DRBD primary could also take out the LINSTOR controller, and
+  # then no volume could be detached or attached anywhere — Cilium's socket load
+  # balancer refuses a Service with no backends, so the CSI controller's calls
+  # failed with EPERM and every attach hung.
+  #
+  # Real HA means several controllers behind a shared database, which is a phase
+  # of its own. Pinning them to the control plane is what makes failover work on
+  # a three-node cluster, and the tolerations above are what makes them eligible.
+  controller:
+    podTemplate:
+      spec:
+        nodeSelector:
+          node-role.kubernetes.io/control-plane: ""
+  csiController:
+    podTemplate:
+      spec:
+        nodeSelector:
+          node-role.kubernetes.io/control-plane: ""
 ---
 # Upstream's Talos how-to, verbatim. The satellite's default pod spec assumes a
 # systemd host with kernel sources: `/run/systemd/system` is mounted with

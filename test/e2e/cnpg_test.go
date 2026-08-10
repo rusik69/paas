@@ -98,9 +98,29 @@ func TestCNPG_ClusterBecomesReadyOnReplicatedStorage(t *testing.T) {
 		},
 	}}
 
-	if _, err := dynClient.Resource(clusterGVR).Namespace(ns).
-		Create(t.Context(), cluster, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("create cnpg cluster: %v", err)
+	// Retried, because the operator reports Available before its admission
+	// webhook is serving, and a Cluster created in that window is rejected with
+	// a webhook timeout. Waiting for the Deployment is not enough — its
+	// readiness probe does not cover the webhook endpoint.
+	createCtx, createCancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer createCancel()
+
+	var lastCreate string
+	if err := wait.For(createCtx, 5*time.Second, "cnpg cluster accepted",
+		func(ctx context.Context) (bool, error) {
+			_, err := dynClient.Resource(clusterGVR).Namespace(ns).
+				Create(ctx, cluster, metav1.CreateOptions{})
+			switch {
+			case err == nil, apierrors.IsAlreadyExists(err):
+				return true, nil
+			default:
+				if ctx.Err() == nil {
+					lastCreate = err.Error()
+				}
+				return false, nil
+			}
+		}); err != nil {
+		t.Fatalf("%v (last: %s)", err, lastCreate)
 	}
 	t.Cleanup(func() {
 		if t.Failed() {
