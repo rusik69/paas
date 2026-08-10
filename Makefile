@@ -211,14 +211,14 @@ e2e: ## Run the Go e2e assertions against a running cluster
 		$(GO) test -tags e2e -race -count=1 -timeout $(E2E_TIMEOUT) -v ./test/e2e/...
 
 .PHONY: test-e2e
-# Everything after cluster-up runs inside one status capture, so a failure in
-# deploying the operator tears the cluster down too. Leaving three guests
-# running because a step before the assertions failed is how a machine loses
-# eight gigabytes to a build nobody is watching.
+# Every step runs inside one status capture, cluster-up included, so any failure
+# still tears the guests down. A bring-up that dies partway leaves them behind
+# just as surely as a failed assertion does — an upstream chart repository
+# returning 503 is what proved it — and that is how a machine loses ten
+# gigabytes to a build nobody is watching.
 test-e2e: ## Provision, assert, tear down — the target named in docs/testing.md
-	$(MAKE) cluster-up
 	@set +e; \
-	$(MAKE) operator-up && $(MAKE) e2e; \
+	$(MAKE) cluster-up && $(MAKE) operator-up && $(MAKE) e2e; \
 	status=$$?; \
 	$(MAKE) cluster-down; \
 	exit $$status
