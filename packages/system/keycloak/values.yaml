@@ -22,6 +22,13 @@ keycloakx:
     - "start-dev"
     - "--http-enabled=true"
 
+  http:
+    # Keycloak has served at the root since v17; the chart still defaults to the
+    # legacy /auth prefix. The issuer URL ends up in every token and in the API
+    # server's OIDC configuration, so it is worth being the modern one rather
+    # than carrying a path that exists for compatibility with Keycloak 16.
+    relativePath: "/"
+
   # Waits for Postgres to accept connections, which is why the database can live
   # in the same chart without an ordering stage.
   dbchecker:
