@@ -49,6 +49,18 @@ func TestStorage_Replicated3SurvivesLossOfPrimaryNode(t *testing.T) {
 		t.Fatalf("writer never became ready — the replicated-3 PVC did not bind: %v", err)
 	}
 
+	// The LINSTOR resource is named after the PV, which only exists once the
+	// claim is bound.
+	boundPVC, err := clientset.CoreV1().PersistentVolumeClaims(ns).
+		Get(t.Context(), "replicated", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get pvc replicated: %v", err)
+	}
+	volumeName := boundPVC.Spec.VolumeName
+	if volumeName == "" {
+		t.Fatal("pvc replicated is bound to no volume")
+	}
+
 	// Keeping the volume mounted is what makes this node genuinely the DRBD
 	// primary when it is killed.
 	primary := getPod(t, ns, "writer").Spec.NodeName
@@ -110,8 +122,8 @@ func TestStorage_Replicated3SurvivesLossOfPrimaryNode(t *testing.T) {
 	if err := waitNodeReadyIs(t, primary, corev1.ConditionTrue, 10*time.Minute); err != nil {
 		t.Fatalf("node %s did not rejoin after power-on: %v", primary, err)
 	}
-	if err := waitReplicasUpToDate(t, 10*time.Minute); err != nil {
-		t.Fatalf("DRBD did not resync after the node returned: %v", err)
+	if err := waitVolumeUpToDate(t, volumeName, 10*time.Minute); err != nil {
+		t.Fatalf("DRBD did not resync %s after the node returned: %v", volumeName, err)
 	}
 }
 
@@ -286,24 +298,45 @@ func waitNodeReadyIs(t *testing.T, name string, want corev1.ConditionStatus, tim
 
 // LINSTOR is asked directly: a PV that is Bound says nothing about whether the
 // returning node's replica has caught up.
-func waitReplicasUpToDate(t *testing.T, timeout time.Duration) error {
+// waitVolumeUpToDate waits for every replica of one volume to resync.
+//
+// One volume, not the whole cluster. Checking every volume made this assertion
+// depend on how much unrelated data the cluster happened to hold: once the
+// in-cluster registry carried charts and an operator image, a returning node
+// resynced gigabytes that have nothing to do with what this test wrote, and the
+// test failed for the wrong reason.
+func waitVolumeUpToDate(t *testing.T, volume string, timeout time.Duration) error {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 
-	return wait.Stable(ctx, 10*time.Second, 20*time.Second, "all DRBD replicas UpToDate",
+	return wait.Stable(ctx, 10*time.Second, 20*time.Second, "replicas of "+volume+" UpToDate",
 		func(ctx context.Context) (bool, error) {
 			out, err := linstor(ctx, "resource", "list-volumes")
 			if err != nil {
 				return false, nil
 			}
-			for _, bad := range []string{"Inconsistent", "Outdated", "SyncTarget", "Unknown"} {
-				if strings.Contains(out, bad) {
+
+			var rows int
+			for _, line := range strings.Split(out, "\n") {
+				if !strings.Contains(line, volume) {
+					continue
+				}
+				rows++
+				for _, bad := range []string{"Inconsistent", "Outdated", "SyncTarget", "Unknown"} {
+					if strings.Contains(line, bad) {
+						return false, nil
+					}
+				}
+				if !strings.Contains(line, "UpToDate") {
 					return false, nil
 				}
 			}
-			return strings.Contains(out, "UpToDate"), nil
+			// No rows means LINSTOR has not caught up with the volume's
+			// existence yet, which is not the same as every replica being
+			// healthy.
+			return rows > 0, nil
 		})
 }
 
