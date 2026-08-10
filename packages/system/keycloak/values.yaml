@@ -15,7 +15,11 @@ database:
 # appears somewhere else too and must agree: clusterIP with the certificate SAN
 # and the API server's issuer URL, realm and clientId with its --oidc-* flags.
 oidc:
-  clusterIP: 10.96.0.31
+  # The control-plane node's address and a fixed NodePort. Reachable from the
+  # API server without any service translation, which a ClusterIP turned out to
+  # need and not get.
+  host: 10.77.0.11
+  nodePort: 31443
   port: 8443
   realm: paas
   clientId: kubernetes
@@ -46,7 +50,7 @@ keycloakx:
     # token's iss claim, and the API server rejects a token whose issuer differs
     # by so much as a port.
     - name: KC_HOSTNAME
-      value: "https://10.96.0.31:8443"
+      value: "https://10.77.0.11:31443"
     - name: KC_HOSTNAME_STRICT
       value: "false"
     # Certificates turn on TLS for the management interface too, and the chart's

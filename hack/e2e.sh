@@ -50,11 +50,12 @@ CLUSTER_ENDPOINT="https://${CONTROLPLANE_IP}:6443"
 #
 # An IP rather than a Service DNS name because the API server runs in the host
 # network namespace and does not use cluster DNS — it cannot resolve
-# keycloak.paas-system.svc at all. It can reach a ClusterIP, which is the same
-# mechanism the registry already relies on at 10.96.0.30 and which
-# TestRegistry_ClusterIPReachableFromHostNetwork proves.
-OIDC_CLUSTER_IP="${OIDC_CLUSTER_IP:-10.96.0.31}"
-OIDC_ISSUER_URL="${OIDC_ISSUER_URL:-https://${OIDC_CLUSTER_IP}:8443/realms/paas}"
+# keycloak.paas-system.svc at all. A node address needs no service translation,
+# which a ClusterIP turned out to need and not get: the API server refused one
+# with EPERM even with the Service's endpoints healthy.
+OIDC_HOST="${OIDC_HOST:-10.77.0.11}"
+OIDC_PORT="${OIDC_PORT:-31443}"
+OIDC_ISSUER_URL="${OIDC_ISSUER_URL:-https://${OIDC_HOST}:${OIDC_PORT}/realms/paas}"
 OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-kubernetes}"
 
 # oidc_pki mints the CA and serving certificate the issuer is trusted through.
@@ -76,15 +77,15 @@ oidc_pki() {
 	# The SAN is the pinned IP, because that is what the issuer URL names and
 	# what the API server will verify against.
 	openssl req -newkey rsa:2048 -nodes \
-		-subj "/CN=${OIDC_CLUSTER_IP}" \
+		-subj "/CN=${OIDC_HOST}" \
 		-keyout "${dir}/tls.key" -out "${dir}/tls.csr" >/dev/null 2>&1 ||
 		die "generating the OIDC serving key failed"
 	openssl x509 -req -in "${dir}/tls.csr" -days 3650 \
 		-CA "${dir}/ca.crt" -CAkey "${dir}/ca.key" -CAcreateserial \
-		-extfile <(printf 'subjectAltName=IP:%s\nextendedKeyUsage=serverAuth\n' "$OIDC_CLUSTER_IP") \
+		-extfile <(printf 'subjectAltName=IP:%s\nextendedKeyUsage=serverAuth\n' "$OIDC_HOST") \
 		-out "${dir}/tls.crt" >/dev/null 2>&1 ||
 		die "signing the OIDC serving certificate failed"
-	log "OIDC CA and serving certificate for ${OIDC_CLUSTER_IP}"
+	log "OIDC CA and serving certificate for ${OIDC_HOST}"
 }
 
 # Fields are read positionally because the MAC contains the separator.

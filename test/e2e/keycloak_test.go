@@ -24,7 +24,7 @@ import (
 // derived these from the thing under test could not catch the two disagreeing,
 // which is the failure mode that produces no error anywhere.
 const (
-	oidcIssuerHost   = "https://10.96.0.31:8443"
+	oidcIssuerHost   = "https://10.77.0.11:31443"
 	oidcIssuerURL    = oidcIssuerHost + "/realms/paas"
 	oidcClientID     = "kubernetes"
 	oidcTestUser     = "alice"

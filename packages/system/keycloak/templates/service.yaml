@@ -2,14 +2,17 @@
   A Service with a pinned ClusterIP, separate from the chart's own.
 
   The API server runs in the host network namespace and has no cluster DNS, so
-  the OIDC issuer URL has to be an address it can dial directly. Cilium's socket
-  load balancer makes a ClusterIP reachable from that namespace — the same
-  mechanism the registry relies on at 10.96.0.30, proven by
-  TestRegistry_ClusterIPReachableFromHostNetwork.
+  the OIDC issuer URL has to be an address it can dial directly.
 
-  Pinned rather than allocated, because the address appears in three places that
-  must agree: this Service, the API server's --oidc-issuer-url, and the SAN of
-  the certificate Keycloak serves.
+  A NodePort on the control-plane node's own address rather than a ClusterIP.
+  The ClusterIP was tried first and refused with EPERM from the API server, even
+  with the Service's endpoints healthy: Cilium's socket load balancer translates
+  ClusterIPs for pods and for host-network pods, but the API server static pod
+  did not get that translation. A node IP needs no translation at all.
+
+  The port is fixed rather than allocated, because the address appears in three
+  places that must agree: this Service, the API server's --oidc-issuer-url, and
+  the SAN of the certificate Keycloak serves.
 */ -}}
 apiVersion: v1
 kind: Service
@@ -19,8 +22,7 @@ metadata:
   labels:
     app.kubernetes.io/name: keycloak-oidc
 spec:
-  type: ClusterIP
-  clusterIP: {{ .Values.oidc.clusterIP | quote }}
+  type: NodePort
   selector:
     app.kubernetes.io/name: keycloakx
     app.kubernetes.io/instance: {{ .Release.Name }}
@@ -28,4 +30,5 @@ spec:
     - name: https
       port: {{ .Values.oidc.port }}
       targetPort: https
+      nodePort: {{ .Values.oidc.nodePort }}
       protocol: TCP

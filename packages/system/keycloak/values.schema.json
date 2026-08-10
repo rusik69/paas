@@ -17,7 +17,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "clusterIP": {"type": "string"},
+        "host": {"type": "string"},
+        "nodePort": {"type": "integer"},
         "port": {"type": "integer"},
         "realm": {"type": "string"},
         "clientId": {"type": "string"},
