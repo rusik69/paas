@@ -46,6 +46,47 @@ NODES=(
 CONTROLPLANE_IP="10.77.0.11"
 CLUSTER_ENDPOINT="https://${CONTROLPLANE_IP}:6443"
 
+# Keycloak's pinned ClusterIP, and the issuer built from it.
+#
+# An IP rather than a Service DNS name because the API server runs in the host
+# network namespace and does not use cluster DNS — it cannot resolve
+# keycloak.paas-system.svc at all. It can reach a ClusterIP, which is the same
+# mechanism the registry already relies on at 10.96.0.30 and which
+# TestRegistry_ClusterIPReachableFromHostNetwork proves.
+OIDC_CLUSTER_IP="${OIDC_CLUSTER_IP:-10.96.0.31}"
+OIDC_ISSUER_URL="${OIDC_ISSUER_URL:-https://${OIDC_CLUSTER_IP}:8443/realms/paas}"
+OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-kubernetes}"
+
+# oidc_pki mints the CA and serving certificate the issuer is trusted through.
+#
+# Generated rather than committed: a committed private key is a private key in a
+# public repository whatever the file is called. Reused across re-runs, because
+# regenerating would invalidate a config the live control plane is already using.
+oidc_pki() {
+	local dir="${E2E_DIR}/oidc"
+	mkdir -p "$dir"
+	[[ -s "${dir}/ca.crt" && -s "${dir}/tls.crt" ]] && return 0
+
+	step "generating OIDC PKI"
+	openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+		-subj "/CN=paas-oidc-ca" \
+		-keyout "${dir}/ca.key" -out "${dir}/ca.crt" >/dev/null 2>&1 ||
+		die "generating the OIDC CA failed"
+
+	# The SAN is the pinned IP, because that is what the issuer URL names and
+	# what the API server will verify against.
+	openssl req -newkey rsa:2048 -nodes \
+		-subj "/CN=${OIDC_CLUSTER_IP}" \
+		-keyout "${dir}/tls.key" -out "${dir}/tls.csr" >/dev/null 2>&1 ||
+		die "generating the OIDC serving key failed"
+	openssl x509 -req -in "${dir}/tls.csr" -days 3650 \
+		-CA "${dir}/ca.crt" -CAkey "${dir}/ca.key" -CAcreateserial \
+		-extfile <(printf 'subjectAltName=IP:%s\nextendedKeyUsage=serverAuth\n' "$OIDC_CLUSTER_IP") \
+		-out "${dir}/tls.crt" >/dev/null 2>&1 ||
+		die "signing the OIDC serving certificate failed"
+	log "OIDC CA and serving certificate for ${OIDC_CLUSTER_IP}"
+}
+
 # Fields are read positionally because the MAC contains the separator.
 node_field() {
 	local spec="$1" idx="$2"
@@ -273,8 +314,17 @@ gen_configs() {
 	local common="${E2E_DIR}/config/common.patch.yaml"
 	TALOS_INSTALLER_IMAGE="$installer" \
 		envsubst <"${REPO_ROOT}/hack/talos/common.patch.yaml" >"$common"
+	oidc_pki
+
 	local cp_patch="${E2E_DIR}/config/controlplane.patch.yaml"
-	E2E_SUBNET="$E2E_SUBNET" envsubst <"${REPO_ROOT}/hack/talos/controlplane.patch.yaml" >"$cp_patch"
+	# The CA is inlined into the machine config, indented to sit under a YAML
+	# block scalar: the API server reads --oidc-ca-file from disk, so the bundle
+	# has to arrive as a file on the node and a Secret is not reachable from
+	# where it runs.
+	OIDC_CA_INDENTED="$(sed 's/^/        /' "${E2E_DIR}/oidc/ca.crt")" \
+	OIDC_ISSUER_URL="$OIDC_ISSUER_URL" \
+	E2E_SUBNET="$E2E_SUBNET" \
+		envsubst <"${REPO_ROOT}/hack/talos/controlplane.patch.yaml" >"$cp_patch"
 
 	talosctl gen config "$CLUSTER_NAME" "$CLUSTER_ENDPOINT" \
 		--with-secrets "${E2E_DIR}/config/secrets.yaml" \

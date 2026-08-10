@@ -10,8 +10,34 @@ machine:
     # the control plane is a storage node too — the same reason it carries a
     # data disk (see the NODES table in hack/e2e.sh).
     paas.io/storage-node: "true"
+  # The OIDC CA, as a file, because --oidc-ca-file is read from disk and a Secret
+  # is not reachable from the host network namespace the API server runs in.
+  files:
+    - path: /var/lib/paas-oidc/ca.crt
+      permissions: 0o444
+      op: create
+      content: |
+${OIDC_CA_INDENTED}
 cluster:
   allowSchedulingOnControlPlanes: false
+  apiServer:
+    extraArgs:
+      # An IP-based issuer, because the API server has no cluster DNS. See
+      # hack/e2e.sh for why, and docs/superpowers/specs for the whole design.
+      oidc-issuer-url: "${OIDC_ISSUER_URL}"
+      oidc-client-id: kubernetes
+      oidc-username-claim: preferred_username
+      # Keycloak emits no group claim unless a mapper is configured on the
+      # client. Without one this is simply absent and every paas:tenant:*
+      # RoleBinding matches nothing, with no error to say so.
+      oidc-groups-claim: groups
+      oidc-ca-file: /var/lib/paas-oidc/ca.crt
+    # The static pod does not see arbitrary host paths, so the directory holding
+    # the CA has to be mounted in explicitly.
+    extraVolumes:
+      - hostPath: /var/lib/paas-oidc
+        mountPath: /var/lib/paas-oidc
+        readonly: true
   etcd:
     advertisedSubnets:
       - "${E2E_SUBNET}"
