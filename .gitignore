@@ -4,6 +4,7 @@
 /dist/
 # `go build ./cmd/...` drops binaries in the repo root.
 /paas-operator
+/imgpush
 
 # Never commit a kubeconfig or a talosconfig — both carry cluster-admin credentials.
 kubeconfig
