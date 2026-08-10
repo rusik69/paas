@@ -33,6 +33,8 @@ var (
 		"path to the pinned-version definitions")
 	busyboxImage = flag.String("busybox-image", "busybox:1.36",
 		"image used by storage fixtures")
+	curlImage = flag.String("curl-image", "",
+		"image with a TLS-capable HTTP client; defaults to the pinned CURL_VERSION")
 
 	clientset *kubernetes.Clientset
 	// For the CRD-defined kinds the platform installs but does not own.

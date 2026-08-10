@@ -192,9 +192,16 @@ func keycloakToken(t *testing.T) string {
 	t.Helper()
 
 	ns := namespace(t, "e2e-kctoken")
+	// curl, not busybox's wget: wget here cannot speak TLS at all, and the token
+	// endpoint is only reachable over HTTPS.
+	//
+	// -k because the issuer's certificate is signed by the CA generated at
+	// bring-up, which this pod has no copy of. What the certificate proves is
+	// asserted where it matters — the API server validates it against the CA it
+	// was configured with, and that is what the rest of this test exercises.
 	script := fmt.Sprintf(
-		`set -e; wget -q --no-check-certificate -O- `+
-			`--post-data='grant_type=password&client_id=%s&username=%s&password=%s' `+
+		`set -e; curl -sk -X POST `+
+			`-d 'grant_type=password' -d 'client_id=%s' -d 'username=%s' -d 'password=%s' `+
 			`%s/protocol/openid-connect/token `+
 			`| sed 's/.*"access_token":"//; s/".*//' > /tmp/t; `+
 			`test -s /tmp/t; cat /tmp/t`,
@@ -206,7 +213,7 @@ func keycloakToken(t *testing.T) string {
 			RestartPolicy: corev1.RestartPolicyNever,
 			Containers: []corev1.Container{{
 				Name:    "main",
-				Image:   *busyboxImage,
+				Image:   curlImageRef(t),
 				Command: []string{"sh", "-c", script},
 			}},
 		},
@@ -229,6 +236,16 @@ func keycloakToken(t *testing.T) string {
 		t.Fatalf("Keycloak returned no usable token: %q", token)
 	}
 	return token
+}
+
+// curlImageRef returns the pinned curl image.
+func curlImageRef(t *testing.T) string {
+	t.Helper()
+
+	if *curlImage != "" {
+		return *curlImage
+	}
+	return "curlimages/curl:" + pinnedVersion(t, "CURL_VERSION")
 }
 
 // adminHost returns the API server address the admin kubeconfig uses, which is

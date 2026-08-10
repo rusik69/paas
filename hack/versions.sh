@@ -32,6 +32,9 @@ CILIUM_VERSION="${CILIUM_VERSION:-1.18.12}" # helm chart version
 PIRAEUS_VERSION="${PIRAEUS_VERSION:-v2.11.0}"
 ZOT_VERSION="${ZOT_VERSION:-v2.1.20}"
 CRANE_VERSION="${CRANE_VERSION:-v0.21.9}" # e2e only: pushes a fixture image
+# e2e only: busybox's wget cannot speak TLS, and the OIDC token exchange has to
+# happen over HTTPS from inside the cluster.
+CURL_VERSION="${CURL_VERSION:-8.18.0}"
 
 # The CloudNativePG operator, vendored under packages/system/cnpg. Chart version
 # and app version move independently, so both are pinned: the chart is what is
@@ -93,6 +96,7 @@ versions_check() {
 	_check_url piraeus "https://github.com/piraeusdatastore/piraeus-operator/releases/tag/${PIRAEUS_VERSION}" || rc=1
 	_check_zot || rc=1
 	_check_url crane "https://github.com/google/go-containerregistry/releases/tag/${CRANE_VERSION}" || rc=1
+	_check_url curl "https://github.com/curl/curl/releases/tag/curl-$(tr . _ <<<"$CURL_VERSION")" || rc=1
 	_check_url cnpg "https://github.com/cloudnative-pg/cloudnative-pg/releases/tag/v${CNPG_VERSION}" || rc=1
 	_check_url keycloak "https://github.com/keycloak/keycloak/releases/tag/${KEYCLOAK_VERSION}" || rc=1
 	_check_url actionlint "https://github.com/rhysd/actionlint/releases/tag/${ACTIONLINT_VERSION}" || rc=1
