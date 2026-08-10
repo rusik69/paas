@@ -202,13 +202,23 @@ operator-up: ## Build, push and deploy the operator, and publish the e2e release
 	hack/operator.sh all
 
 .PHONY: e2e
+# -count=1 defeats the test cache. A cached e2e result is a lie: its inputs are
+# a cluster Go cannot see, so an unchanged test binary reports the last run's
+# verdict against a cluster that may not even exist.
 e2e: ## Run the Go e2e assertions against a running cluster
 	KUBECONFIG=$${KUBECONFIG:-$$PWD/.e2e/kubeconfig} \
 	TALOSCONFIG=$${TALOSCONFIG:-$$PWD/.e2e/talosconfig} \
-		$(GO) test -tags e2e -race -timeout $(E2E_TIMEOUT) -v ./test/e2e/...
+		$(GO) test -tags e2e -race -count=1 -timeout $(E2E_TIMEOUT) -v ./test/e2e/...
 
 .PHONY: test-e2e
+# Everything after cluster-up runs inside one status capture, so a failure in
+# deploying the operator tears the cluster down too. Leaving three guests
+# running because a step before the assertions failed is how a machine loses
+# eight gigabytes to a build nobody is watching.
 test-e2e: ## Provision, assert, tear down — the target named in docs/testing.md
 	$(MAKE) cluster-up
-	$(MAKE) operator-up
-	$(MAKE) e2e; status=$$?; $(MAKE) cluster-down; exit $$status
+	@set +e; \
+	$(MAKE) operator-up && $(MAKE) e2e; \
+	status=$$?; \
+	$(MAKE) cluster-down; \
+	exit $$status

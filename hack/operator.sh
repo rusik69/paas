@@ -19,7 +19,14 @@ PUSH_HOST="${PUSH_HOST:-localhost:5000}"
 REGISTRY_NAMESPACE="${REGISTRY_NAMESPACE:-paas-system}"
 
 PORT_FORWARD_PID=""
-cleanup() { [[ -z "$PORT_FORWARD_PID" ]] || kill "$PORT_FORWARD_PID" 2>/dev/null || true; }
+# One scratch directory for the whole run. A per-function RETURN trap fires
+# again as the caller returns, when its local is already out of scope, and under
+# `set -u` that aborts a run whose work had already succeeded.
+SCRATCH=""
+cleanup() {
+	[[ -z "$PORT_FORWARD_PID" ]] || kill "$PORT_FORWARD_PID" 2>/dev/null || true
+	[[ -z "$SCRATCH" ]] || rm -rf "$SCRATCH"
+}
 trap cleanup EXIT
 
 start_port_forward() {
@@ -72,9 +79,8 @@ cmd_deploy() {
 # update and a removal, and the rollback has something real to restore.
 cmd_e2e_releases() {
 	require_tools kubectl curl helm flux
-	local scratch
-	scratch="$(mktemp -d)"
-	trap 'rm -rf "$scratch"' RETURN
+	[[ -n "$SCRATCH" ]] || SCRATCH="$(mktemp -d)"
+	local scratch="$SCRATCH"
 
 	cmd_publish v0.1.0
 
