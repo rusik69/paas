@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/rusik69/paas/api/v1alpha1"
+	"github.com/rusik69/paas/api/platform/v1alpha1"
 )
 
 func TestParsePackages_ReadsAWellFormedFile(t *testing.T) {

@@ -119,8 +119,10 @@ linter, which is why they are listed here.
 Full version in architecture.md §10 and go-guidelines. The parts that are easy
 to get wrong:
 
-- `api/v1alpha1/` — API types only. Its dependency set is `k8s.io/apimachinery`
-  and nothing else, because external clients import it.
+- `api/<group>/v1alpha1/` — API types only, one package per API group
+  (`core`, `apps`, `platform`), because controller-gen takes one `+groupName`
+  per package. Its dependency set is `k8s.io/apimachinery` and nothing else,
+  because external clients import it.
 - `internal/` — everything that is not a deliberate public contract. Moving out
   of `internal/` later is easy; moving in is a breaking change.
 - `pkg/` — code we would accept an external importer for.

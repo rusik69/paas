@@ -19,7 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	"github.com/rusik69/paas/api/v1alpha1"
+	"github.com/rusik69/paas/api/platform/v1alpha1"
 	"github.com/rusik69/paas/internal/controller/packagesource"
 	pkgctl "github.com/rusik69/paas/internal/controller/pkg"
 	"github.com/rusik69/paas/internal/controller/platform"

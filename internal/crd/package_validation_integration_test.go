@@ -9,7 +9,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/rusik69/paas/api/v1alpha1"
+	"github.com/rusik69/paas/api/platform/v1alpha1"
 )
 
 func pkg(name string, stage v1alpha1.PackageStage) *v1alpha1.Package {

@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/rusik69/paas/api/v1alpha1"
+	"github.com/rusik69/paas/api/platform/v1alpha1"
 	"github.com/rusik69/paas/internal/controller/packagesource"
 	"github.com/rusik69/paas/internal/flux"
 )

@@ -20,7 +20,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
 
-	"github.com/rusik69/paas/api/v1alpha1"
+	"github.com/rusik69/paas/api/platform/v1alpha1"
 )
 
 const validPackages = `packages:

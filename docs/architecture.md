@@ -272,7 +272,7 @@ been restored is not backup.
 ## 10. Repository layout
 
 ```
-api/v1alpha1/         Tenant, App, Build, Domain, ServiceClass, Platform, Package
+api/<group>/v1alpha1/ one package per API group: core, apps, platform
 cmd/                  paas-operator, paas-controller, paas-apiserver, paas-usage, paasctl
 internal/controller/  reconcilers, one package per kind
 internal/dynamic/     ServiceClass -> CRD generator + dynamic HelmRelease reconciler

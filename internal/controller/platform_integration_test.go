@@ -17,7 +17,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/rusik69/paas/api/v1alpha1"
+	"github.com/rusik69/paas/api/platform/v1alpha1"
 	pkgctl "github.com/rusik69/paas/internal/controller/pkg"
 	platformctl "github.com/rusik69/paas/internal/controller/platform"
 )

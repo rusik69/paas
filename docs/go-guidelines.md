@@ -10,7 +10,8 @@ that isn't obvious, the failure is named.
 ## Layout
 
 ```
-api/v1alpha1/         API types only. No business logic, no imports from internal/.
+api/<group>/v1alpha1/ API types only, one package per API group. No business logic,
+                      no imports from internal/.
 cmd/<binary>/         main() and flag wiring. Thin — everything real lives below.
 internal/controller/  one package per reconciled kind
 internal/dynamic/     ServiceClass -> CRD generation, dynamic HelmRelease reconciler
