@@ -48,7 +48,7 @@ func waitCNPGOperator(t *testing.T, timeout time.Duration) {
 
 	var last string
 	err := wait.For(ctx, 5*time.Second, "cnpg operator available", func(ctx context.Context) (bool, error) {
-		list, err := clientset.AppsV1().Deployments("flux-system").List(ctx, metav1.ListOptions{})
+		list, err := clientset.AppsV1().Deployments(platformNamespace).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			if ctx.Err() == nil {
 				last = err.Error()

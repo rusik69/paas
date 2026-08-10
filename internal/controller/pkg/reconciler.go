@@ -31,6 +31,16 @@ const ReleaseInterval = 10 * time.Minute
 // what makes "every migration in the same release" answerable with a List.
 const PlatformLabel = "platform.paas.io/platform"
 
+// TargetNamespace is where platform components are installed.
+//
+// Not flux-system. Flux's own install ships a NetworkPolicy selecting every pod
+// in its namespace and permitting ingress on port 8080 alone, so a component
+// installed there is unreachable on any other port — CNPG's admission webhook
+// listens on 9443, and the API server could not call it. The HelmRelease objects
+// still live in flux-system, because that is where helm-controller reconciles
+// them; only the releases land here.
+const TargetNamespace = "paas-system"
+
 // Reconciler renders a Package into a Flux HelmRelease.
 type Reconciler struct {
 	client.Client
@@ -109,8 +119,14 @@ func (r *Reconciler) desired(p *v1alpha1.Package, deps []helmv2.DependencyRefere
 			Namespace: flux.Namespace,
 		},
 		Spec: helmv2.HelmReleaseSpec{
-			Interval:  metav1.Duration{Duration: ReleaseInterval},
-			DependsOn: deps,
+			Interval:        metav1.Duration{Duration: ReleaseInterval},
+			DependsOn:       deps,
+			TargetNamespace: TargetNamespace,
+			// Kept beside the release rather than in flux-system, so a namespace
+			// deleted by hand takes its Helm history with it instead of leaving
+			// state that disagrees with the cluster.
+			StorageNamespace: TargetNamespace,
+			Install:          &helmv2.Install{CreateNamespace: true},
 			Chart: &helmv2.HelmChartTemplate{
 				Spec: helmv2.HelmChartTemplateSpec{
 					Chart:   p.Spec.Chart,

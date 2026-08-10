@@ -20,6 +20,10 @@ import (
 // by two readers — the operator's fetcher and Flux — and both are in-cluster.
 const platformRegistry = "oci://registry.paas-system.svc.cluster.local:5000/paas"
 
+// Where platform components are installed. Not flux-system: Flux's own
+// NetworkPolicy there permits ingress on port 8080 alone.
+const platformNamespace = "paas-system"
+
 var (
 	platformGVR = schema.GroupVersionResource{
 		Group: "platform.paas.io", Version: "v1alpha1", Resource: "platforms",
@@ -74,7 +78,7 @@ func waitHelloMessage(t *testing.T, want string, timeout time.Duration) {
 	var last string
 	err := wait.For(ctx, 5*time.Second, fmt.Sprintf("configmap hello message %q", want),
 		func(ctx context.Context) (bool, error) {
-			cm, err := clientset.CoreV1().ConfigMaps("flux-system").
+			cm, err := clientset.CoreV1().ConfigMaps(platformNamespace).
 				Get(ctx, "hello", metav1.GetOptions{})
 			if err != nil {
 				if ctx.Err() == nil {

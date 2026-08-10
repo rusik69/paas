@@ -108,3 +108,31 @@ func TestPackage_FollowsAVersionChange(t *testing.T) {
 func TestPackage_MissingObjectIsNotAnError(t *testing.T) {
 	reconcile(t, "never-existed-package", packageReconciler())
 }
+
+// Releases must not land in flux-system. Flux's own install ships a
+// NetworkPolicy selecting every pod there and permitting ingress on port 8080
+// alone, which made CNPG's admission webhook on 9443 unreachable from the API
+// server — a component that installed cleanly and then could not be used.
+func TestPackage_ReleasesTargetThePlatformNamespace(t *testing.T) {
+	// CRDs and Flux are installed once by TestMain.
+
+	p := newPackage("targeted", "rel-target", v1alpha1.StageComponent)
+	mustCreate(t, p)
+	reconcile(t, p.Name, packageReconciler())
+
+	hr := helmRelease(t, p.Name)
+	if hr.Namespace != flux.Namespace {
+		t.Errorf("the HelmRelease is in %q, want %q where helm-controller reconciles it",
+			hr.Namespace, flux.Namespace)
+	}
+	if hr.Spec.TargetNamespace != pkgctl.TargetNamespace {
+		t.Errorf("targetNamespace = %q, want %q", hr.Spec.TargetNamespace, pkgctl.TargetNamespace)
+	}
+	if hr.Spec.StorageNamespace != pkgctl.TargetNamespace {
+		t.Errorf("storageNamespace = %q, want %q — history beside the release",
+			hr.Spec.StorageNamespace, pkgctl.TargetNamespace)
+	}
+	if hr.Spec.Install == nil || !hr.Spec.Install.CreateNamespace {
+		t.Error("install.createNamespace is not set; the first release into a fresh cluster would fail")
+	}
+}
