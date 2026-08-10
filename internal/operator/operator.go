@@ -47,6 +47,11 @@ var Scheme = func() *runtime.Scheme {
 
 // Options configures the manager.
 type Options struct {
+	// APIEndpoint is what generated tenant kubeconfigs point at. Taken from the
+	// operator's own connection, so a kubeconfig it hands out reaches the same
+	// API server it is talking to.
+	APIEndpoint tenant.APIEndpoint
+
 	// MetricsAddress is the metrics bind address; "0" disables the server.
 	MetricsAddress string
 	// Fetcher resolves a platform version into its release.
@@ -79,7 +84,9 @@ func NewManager(cfg *rest.Config, opts Options) (manager.Manager, error) {
 		{"platform", (&platform.Reconciler{
 			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Fetcher: opts.Fetcher,
 		}).SetupWithManager},
-		{"tenant", (&tenant.Reconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager},
+		{"tenant", (&tenant.Reconciler{
+			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Endpoint: opts.APIEndpoint,
+		}).SetupWithManager},
 	}
 	for _, s := range setups {
 		if err := s.setup(mgr); err != nil {

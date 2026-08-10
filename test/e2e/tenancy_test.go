@@ -13,6 +13,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/rusik69/paas/pkg/wait"
 )
@@ -244,4 +246,54 @@ func sameNamespaceTarget(t *testing.T, namespace string) string {
 	t.Helper()
 
 	return serveInNamespace(t, namespace, "local-listener")
+}
+
+// The half envtest cannot reach: a real cluster runs the token controller, so
+// this proves the generated kubeconfig is one somebody could actually use.
+func TestTenancy_GeneratedKubeconfigWorks(t *testing.T) {
+	ensureRootNamespace(t)
+	applyTenant(t, rootNamespace, "ci", "trial", false)
+	waitNamespace(t, "tenant-ci", 3*time.Minute)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+
+	var kubeconfig []byte
+	err := wait.For(ctx, 5*time.Second, "generated kubeconfig", func(ctx context.Context) (bool, error) {
+		s, err := clientset.CoreV1().Secrets("tenant-ci").
+			Get(ctx, "tenant-kubeconfig", metav1.GetOptions{})
+		if err != nil {
+			return false, nil
+		}
+		kubeconfig = s.Data["kubeconfig"]
+		return len(kubeconfig) > 0, nil
+	})
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Used, not merely parsed: a kubeconfig that does not authenticate is worse
+	// than none, because it fails when someone depends on it.
+	cfg, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
+	if err != nil {
+		t.Fatalf("the generated kubeconfig does not load: %v", err)
+	}
+	tenantClient, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		t.Fatalf("build client from the generated kubeconfig: %v", err)
+	}
+
+	if _, err := tenantClient.CoreV1().ConfigMaps("tenant-ci").
+		List(ctx, metav1.ListOptions{}); err != nil {
+		t.Errorf("the generated kubeconfig cannot read its own namespace: %v", err)
+	}
+
+	// And it must not reach outside the tenant, or the RBAC is decoration.
+	_, err = tenantClient.CoreV1().Secrets("kube-system").List(ctx, metav1.ListOptions{})
+	if err == nil {
+		t.Fatal("the tenant kubeconfig read kube-system")
+	}
+	if !apierrors.IsForbidden(err) {
+		t.Errorf("err = %v, want a 403 — a different failure would pass even with RBAC removed", err)
+	}
 }

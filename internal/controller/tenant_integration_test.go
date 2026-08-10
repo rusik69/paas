@@ -5,11 +5,13 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -357,5 +359,153 @@ func TestTenant_StatusReportsWhereModulesResolved(t *testing.T) {
 	}
 	if own := parentGot.Status.Modules["monitoring"]; own.Tenant != "org" || own.Inherited {
 		t.Errorf("parent monitoring = %+v, want org and not inherited", own)
+	}
+}
+
+// Access objects, against a real API server: RBAC has admission-time validation
+// a fake client does not run, so a malformed Role or a binding naming a
+// nonexistent kind fails here rather than on a cluster.
+func TestTenant_ProvisionsRolesBindingsAndCIAccount(t *testing.T) {
+	obj := newTenant(t, tenancy.RootNamespace, "access", corev1alpha1.PlanBusiness)
+	obj.Spec.Admins = []string{"alice@acme.com"}
+	if err := k8sClient.Update(t.Context(), obj); err != nil {
+		t.Fatalf("set admins: %v", err)
+	}
+	reconcileIn(t, tenancy.RootNamespace, "access", tenantReconciler())
+
+	for _, name := range []string{tenantctl.RoleAdmin, tenantctl.RoleViewer} {
+		var role rbacv1.Role
+		key := types.NamespacedName{Namespace: "tenant-access", Name: name}
+		if err := k8sClient.Get(t.Context(), key, &role); err != nil {
+			t.Fatalf("get role %s: %v", name, err)
+		}
+		for _, rule := range role.Rules {
+			for _, group := range rule.APIGroups {
+				if group == "rbac.authorization.k8s.io" || group == "*" {
+					t.Errorf("role %s grants %q, letting a tenant escalate itself", name, group)
+				}
+			}
+		}
+
+		var rb rbacv1.RoleBinding
+		if err := k8sClient.Get(t.Context(), key, &rb); err != nil {
+			t.Fatalf("get rolebinding %s: %v", name, err)
+		}
+		var users, groups []string
+		for _, s := range rb.Subjects {
+			switch s.Kind {
+			case rbacv1.UserKind:
+				users = append(users, s.Name)
+			case rbacv1.GroupKind:
+				groups = append(groups, s.Name)
+			}
+		}
+		if len(users) == 0 || users[0] != "alice@acme.com" {
+			t.Errorf("%s binds users %v, want the tenant's admin", name, users)
+		}
+		if len(groups) == 0 || groups[0] != tenantctl.GroupPrefix+"access" {
+			t.Errorf("%s binds groups %v, want the tenant's OIDC group", name, groups)
+		}
+	}
+
+	var sa corev1.ServiceAccount
+	key := types.NamespacedName{Namespace: "tenant-access", Name: tenantctl.ServiceAccountCI}
+	if err := k8sClient.Get(t.Context(), key, &sa); err != nil {
+		t.Errorf("get CI service account: %v", err)
+	}
+}
+
+// Administration flows down and not up — ADR 0004. A child's binding must name
+// the parent's admin; the parent's must not name the child's.
+func TestTenant_ParentAdminsAdministerDescendants(t *testing.T) {
+	parent := newTenant(t, tenancy.RootNamespace, "chain", corev1alpha1.PlanBusiness)
+	parent.Spec.Admins = []string{"parent@acme.com"}
+	if err := k8sClient.Update(t.Context(), parent); err != nil {
+		t.Fatalf("set parent admins: %v", err)
+	}
+	reconcileIn(t, tenancy.RootNamespace, "chain", tenantReconciler())
+
+	child := newTenant(t, "tenant-chain", "link", corev1alpha1.PlanTrial)
+	child.Spec.Admins = []string{"child@acme.com"}
+	if err := k8sClient.Update(t.Context(), child); err != nil {
+		t.Fatalf("set child admins: %v", err)
+	}
+	reconcileIn(t, "tenant-chain", "link", tenantReconciler())
+
+	subjects := func(namespace string) []string {
+		var rb rbacv1.RoleBinding
+		key := types.NamespacedName{Namespace: namespace, Name: tenantctl.RoleAdmin}
+		if err := k8sClient.Get(t.Context(), key, &rb); err != nil {
+			t.Fatalf("get rolebinding in %s: %v", namespace, err)
+		}
+		var names []string
+		for _, s := range rb.Subjects {
+			if s.Kind == rbacv1.UserKind {
+				names = append(names, s.Name)
+			}
+		}
+		return names
+	}
+
+	childAdmins := subjects("tenant-chain-link")
+	if !slices.Contains(childAdmins, "parent@acme.com") {
+		t.Errorf("child admins = %v, want the parent's admin among them", childAdmins)
+	}
+	if !slices.Contains(childAdmins, "child@acme.com") {
+		t.Errorf("child admins = %v, want its own admin", childAdmins)
+	}
+
+	parentAdmins := subjects("tenant-chain")
+	if slices.Contains(parentAdmins, "child@acme.com") {
+		t.Errorf("parent admins = %v; administration must not flow up", parentAdmins)
+	}
+}
+
+// envtest runs an apiserver and etcd and nothing else — no token controller —
+// so the token is supplied here rather than minted. What that leaves testable is
+// exactly our half: a token not yet present is not a failure, and once one
+// exists the kubeconfig is written and pinned. Real minting is asserted in
+// test/e2e, on a cluster that has the controller.
+func TestTenant_KubeconfigIsWrittenOnceATokenExists(t *testing.T) {
+	newTenant(t, tenancy.RootNamespace, "ci", corev1alpha1.PlanTrial)
+
+	r := &tenantctl.Reconciler{
+		Client: k8sClient, Scheme: scheme,
+		Endpoint: tenantctl.APIEndpoint{URL: "https://api.example:6443", CA: []byte("ca")},
+	}
+	reconcileIn(t, tenancy.RootNamespace, "ci", r)
+
+	if c := tenantCondition(t, tenancy.RootNamespace, "ci", tenantctl.ConditionReady); c == nil || c.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready = %+v, want True — a token not yet minted is not a failure", c)
+	}
+	var absent corev1.Secret
+	key := types.NamespacedName{Namespace: "tenant-ci", Name: tenantctl.KubeconfigSecret}
+	if err := k8sClient.Get(t.Context(), key, &absent); err == nil {
+		t.Error("a kubeconfig was written with no token; it would authenticate as nobody")
+	}
+
+	// Stand in for the token controller.
+	var tokenSecret corev1.Secret
+	tokenKey := types.NamespacedName{Namespace: "tenant-ci", Name: tenantctl.ServiceAccountCI}
+	if err := k8sClient.Get(t.Context(), tokenKey, &tokenSecret); err != nil {
+		t.Fatalf("get token secret: %v", err)
+	}
+	tokenSecret.Data = map[string][]byte{"token": []byte("minted-token")}
+	if err := k8sClient.Update(t.Context(), &tokenSecret); err != nil {
+		t.Fatalf("supply a token: %v", err)
+	}
+
+	reconcileIn(t, tenancy.RootNamespace, "ci", r)
+
+	var got corev1.Secret
+	if err := k8sClient.Get(t.Context(), key, &got); err != nil {
+		t.Fatalf("get kubeconfig secret: %v", err)
+	}
+	kubeconfig := string(got.Data["kubeconfig"])
+	if !strings.Contains(kubeconfig, "namespace: tenant-ci") {
+		t.Error("the kubeconfig is not pinned to the tenant's namespace")
+	}
+	if !strings.Contains(kubeconfig, "minted-token") {
+		t.Error("the kubeconfig does not carry the service account token")
 	}
 }

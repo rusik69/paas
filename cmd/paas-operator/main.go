@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	"github.com/rusik69/paas/internal/controller/platform"
+	"github.com/rusik69/paas/internal/controller/tenant"
 	"github.com/rusik69/paas/internal/crd"
 	"github.com/rusik69/paas/internal/flux"
 	"github.com/rusik69/paas/internal/operator"
@@ -67,12 +68,32 @@ func run(installTimeout time.Duration, metricsAddress string, insecureRegistry b
 
 	mgr, err := operator.NewManager(cfg, operator.Options{
 		MetricsAddress: metricsAddress,
+		APIEndpoint:    tenant.APIEndpoint{URL: cfg.Host, CA: apiServerCA(cfg)},
 		Fetcher:        &platform.OCIFetcher{Insecure: insecureRegistry},
 	})
 	if err != nil {
 		return err
 	}
 	return operator.Run(ctx, mgr)
+}
+
+// apiServerCA returns the CA a generated kubeconfig needs to trust the API
+// server, from whichever of the two places the in-cluster config carries it.
+func apiServerCA(cfg *rest.Config) []byte {
+	if len(cfg.CAData) > 0 {
+		return cfg.CAData
+	}
+	if cfg.CAFile == "" {
+		return nil
+	}
+	ca, err := os.ReadFile(cfg.CAFile)
+	if err != nil {
+		// Not fatal: the reconciler refuses to write a kubeconfig it cannot
+		// make usable, and the operator's other work is unaffected.
+		fmt.Fprintf(os.Stderr, "paas-operator: read API server CA: %v\n", err)
+		return nil
+	}
+	return ca
 }
 
 func install(ctx context.Context, cfg *rest.Config, timeout time.Duration) error {

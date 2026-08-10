@@ -43,10 +43,15 @@ const TenantLabel = "core.paas.io/tenant"
 // before reaching for the usual pattern.
 const Finalizer = "core.paas.io/tenant-namespace"
 
-// Reconciler renders a Tenant into its namespace, quota and limits.
+// Reconciler renders a Tenant into its namespace, quota, limits, isolation and
+// access.
 type Reconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// Endpoint is what generated kubeconfigs point at. Empty disables
+	// kubeconfig generation rather than emitting one that points nowhere.
+	Endpoint APIEndpoint
 }
 
 // SetupWithManager registers the reconciler.
@@ -95,6 +100,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	if err := r.apply(ctx, &t, namespace, limits); err != nil {
 		return ctrl.Result{}, r.degraded(ctx, &t, "ApplyFailed", err)
+	}
+
+	if err := r.applyAccess(ctx, &t, namespace); err != nil {
+		return ctrl.Result{}, r.degraded(ctx, &t, "AccessFailed", err)
 	}
 
 	modules, err := r.resolveModules(ctx, &t)
@@ -146,6 +155,93 @@ func (r *Reconciler) apply(ctx context.Context, t *corev1alpha1.Tenant, namespac
 		}
 	}
 	return nil
+}
+
+// applyAccess writes the roles, bindings and CI credentials for a namespace.
+//
+// Admins accumulate down the chain: a parent's admins administer descendants,
+// which is ADR 0004's delegated administration falling out of the structure
+// rather than needing its own permissions model.
+func (r *Reconciler) applyAccess(ctx context.Context, t *corev1alpha1.Tenant, namespace string) error {
+	admins, groups, err := r.inheritedAdmins(ctx, t)
+	if err != nil {
+		return err
+	}
+
+	objects := []client.Object{
+		serviceAccount(namespace, t.Name),
+		role(namespace, t.Name, RoleAdmin, []string{"*"}),
+		role(namespace, t.Name, RoleViewer, []string{"get", "list", "watch"}),
+		binding(namespace, t.Name, RoleAdmin, adminSubjects(namespace, admins, groups)),
+		binding(namespace, t.Name, RoleViewer, adminSubjects(namespace, admins, groups)),
+		serviceAccountTokenSecret(namespace, t.Name),
+	}
+	for _, obj := range objects {
+		if err := r.Patch(ctx, obj, client.Apply,
+			client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+			return fmt.Errorf("apply %s %s: %w",
+				obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName(), err)
+		}
+	}
+	return r.applyKubeconfig(ctx, t, namespace)
+}
+
+// applyKubeconfig writes a kubeconfig for the CI account once its token exists.
+//
+// The token is minted asynchronously by the token controller, so its absence is
+// ordinary and not an error: the next reconcile picks it up.
+func (r *Reconciler) applyKubeconfig(ctx context.Context, t *corev1alpha1.Tenant, namespace string) error {
+	if r.Endpoint.URL == "" {
+		return nil
+	}
+
+	var tokenSecret corev1.Secret
+	key := client.ObjectKey{Namespace: namespace, Name: ServiceAccountCI}
+	if err := r.Get(ctx, key, &tokenSecret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("get service account token: %w", err)
+	}
+	token := tokenSecret.Data["token"]
+	if len(token) == 0 {
+		return nil
+	}
+
+	kubeconfig, err := renderKubeconfig(r.Endpoint, namespace, string(token))
+	if err != nil {
+		return fmt.Errorf("render kubeconfig: %w", err)
+	}
+	if err := r.Patch(ctx, kubeconfigSecret(namespace, t.Name, kubeconfig), client.Apply,
+		client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+		return fmt.Errorf("apply kubeconfig secret: %w", err)
+	}
+	return nil
+}
+
+// inheritedAdmins collects this tenant's admins and every ancestor's, plus the
+// OIDC group of each tenant in the chain.
+func (r *Reconciler) inheritedAdmins(ctx context.Context, t *corev1alpha1.Tenant) (admins, groups []string, err error) {
+	seen := map[string]bool{}
+	for node := t; node != nil; {
+		for _, admin := range node.Spec.Admins {
+			if !seen[admin] {
+				seen[admin] = true
+				admins = append(admins, admin)
+			}
+		}
+		groups = append(groups, node.Name)
+
+		parent, ok, err := tenancy.ParentOf(ctx, r.Client, node)
+		if err != nil {
+			return nil, nil, fmt.Errorf("walk ancestors for admins: %w", err)
+		}
+		if !ok {
+			break
+		}
+		node = parent
+	}
+	return admins, groups, nil
 }
 
 // resolveModules records where each module a tenant declares resolved to.

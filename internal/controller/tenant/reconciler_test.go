@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -263,9 +264,11 @@ func TestRemoveFinalizer_PatchFailureIsReported(t *testing.T) {
 	}
 }
 
-// A module declared on a child whose parent is missing cannot be resolved, and
-// reporting Ready anyway would claim an answer the platform does not have.
-func TestReconcile_UnresolvableModuleIsDegraded(t *testing.T) {
+// A tenant whose parent is missing cannot have its ancestors walked, and both
+// the things that walk them — inherited admins and module resolution — are
+// answers the platform would otherwise have to invent. Reporting Ready would
+// claim an access list and a module owner that were never resolved.
+func TestReconcile_MissingAncestorIsDegraded(t *testing.T) {
 	t.Parallel()
 
 	// A child in tenant-acme whose parent object does not exist.
@@ -295,8 +298,8 @@ func TestReconcile_UnresolvableModuleIsDegraded(t *testing.T) {
 	if cond == nil || cond.Status != metav1.ConditionTrue {
 		t.Fatalf("Degraded = %+v, want True", cond)
 	}
-	if !strings.Contains(cond.Message, "monitoring") {
-		t.Errorf("Degraded message = %q, want it to name the module", cond.Message)
+	if !strings.Contains(cond.Message, "acme") {
+		t.Errorf("Degraded message = %q, want it to name the ancestor it could not find", cond.Message)
 	}
 }
 
@@ -322,5 +325,113 @@ func TestReconcile_ModuleNoAncestorProvidesIsOmitted(t *testing.T) {
 	}
 	if cond := apimeta.FindStatusCondition(got.Status.Conditions, ConditionReady); cond == nil || cond.Status != metav1.ConditionTrue {
 		t.Errorf("Ready = %+v, want True — an absent module is not a failure", cond)
+	}
+}
+
+// The access objects a tenant depends on. Failing to write them must not leave
+// the tenant reported Ready with nobody able to reach it.
+func TestReconcile_AccessApplyFailureIsDegraded(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("rbac rejected")
+	c := builder(t, live("acme", corev1alpha1.PlanBusiness)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object,
+				patch client.Patch, opts ...client.PatchOption,
+			) error {
+				switch obj.(type) {
+				case *rbacv1.Role, *rbacv1.RoleBinding, *corev1.ServiceAccount:
+					return boom
+				}
+				return c.Patch(ctx, obj, patch, opts...)
+			},
+		}).Build()
+
+	_, err := (&Reconciler{Client: c, Scheme: testScheme(t)}).Reconcile(t.Context(), request("acme"))
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want it to wrap the access failure", err)
+	}
+	if msg := degradedMessage(t, c, "acme"); !strings.Contains(msg, "tenant-") {
+		t.Errorf("Degraded message = %q, want it to name what failed", msg)
+	}
+}
+
+// A token that cannot be read is not the same as one not yet minted: the first
+// hides a real failure behind a state that looks like waiting.
+func TestReconcile_TokenReadFailureIsReported(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("etcd is unavailable")
+	c := builder(t, live("acme", corev1alpha1.PlanBusiness)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey,
+				obj client.Object, opts ...client.GetOption,
+			) error {
+				if s, ok := obj.(*corev1.Secret); ok && key.Name == ServiceAccountCI {
+					_ = s
+					return boom
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+
+	r := &Reconciler{
+		Client: c, Scheme: testScheme(t),
+		Endpoint: APIEndpoint{URL: "https://api", CA: []byte("ca")},
+	}
+	if _, err := r.Reconcile(t.Context(), request("acme")); !errors.Is(err, boom) {
+		t.Errorf("err = %v, want it to wrap the token read failure", err)
+	}
+}
+
+// With a token present the kubeconfig is written; with the write refused the
+// tenant must not be Ready.
+func TestReconcile_KubeconfigWriteFailureIsDegraded(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("secret rejected")
+	token := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "tenant-acme", Name: ServiceAccountCI},
+		Data:       map[string][]byte{"token": []byte("t")},
+	}
+	c := builder(t, live("acme", corev1alpha1.PlanBusiness), token).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object,
+				patch client.Patch, opts ...client.PatchOption,
+			) error {
+				if s, ok := obj.(*corev1.Secret); ok && s.Name == KubeconfigSecret {
+					return boom
+				}
+				return c.Patch(ctx, obj, patch, opts...)
+			},
+		}).Build()
+
+	r := &Reconciler{
+		Client: c, Scheme: testScheme(t),
+		Endpoint: APIEndpoint{URL: "https://api", CA: []byte("ca")},
+	}
+	if _, err := r.Reconcile(t.Context(), request("acme")); !errors.Is(err, boom) {
+		t.Errorf("err = %v, want it to wrap the kubeconfig write failure", err)
+	}
+}
+
+// No endpoint means no kubeconfig, rather than one pointing nowhere.
+func TestReconcile_NoEndpointWritesNoKubeconfig(t *testing.T) {
+	t.Parallel()
+
+	token := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "tenant-acme", Name: ServiceAccountCI},
+		Data:       map[string][]byte{"token": []byte("t")},
+	}
+	c := builder(t, live("acme", corev1alpha1.PlanBusiness), token).Build()
+
+	if _, err := (&Reconciler{Client: c, Scheme: testScheme(t)}).Reconcile(t.Context(), request("acme")); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	var s corev1.Secret
+	key := types.NamespacedName{Namespace: "tenant-acme", Name: KubeconfigSecret}
+	if err := c.Get(t.Context(), key, &s); err == nil {
+		t.Error("a kubeconfig was written with no endpoint configured")
 	}
 }
