@@ -7,6 +7,13 @@
 # stage orders the rollout. Every migration reaches Ready before any component
 # starts, enforced by Flux dependsOn rather than by sequencing at runtime.
 packages:
+  # A real component, delivered by the platform rather than by hand. Its
+  # database is what Keycloak will need in phase 2's remaining bullet.
+  - name: cnpg
+    chart: cnpg
+    version: "0.1.0"
+    stage: component
+
   - name: hello-migrate
     chart: hello-migrate
     version: "0.1.0"

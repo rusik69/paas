@@ -33,6 +33,12 @@ PIRAEUS_VERSION="${PIRAEUS_VERSION:-v2.11.0}"
 ZOT_VERSION="${ZOT_VERSION:-v2.1.20}"
 CRANE_VERSION="${CRANE_VERSION:-v0.21.9}" # e2e only: pushes a fixture image
 
+# The CloudNativePG operator, vendored under packages/system/cnpg. Chart version
+# and app version move independently, so both are pinned: the chart is what is
+# vendored, the app is what a test asserts is running.
+CNPG_CHART_VERSION="${CNPG_CHART_VERSION:-0.29.0}"
+CNPG_VERSION="${CNPG_VERSION:-1.30.0}"
+
 # Pinned to what Cilium 1.18 declares conformance against. A newer Gateway API
 # installs CRDs with fields the Cilium operator does not understand, and it
 # reports that as a GatewayClass reconcile error rather than a version mismatch.
@@ -81,11 +87,22 @@ versions_check() {
 	_check_url piraeus "https://github.com/piraeusdatastore/piraeus-operator/releases/tag/${PIRAEUS_VERSION}" || rc=1
 	_check_zot || rc=1
 	_check_url crane "https://github.com/google/go-containerregistry/releases/tag/${CRANE_VERSION}" || rc=1
+	_check_url cnpg "https://github.com/cloudnative-pg/cloudnative-pg/releases/tag/v${CNPG_VERSION}" || rc=1
 	_check_url actionlint "https://github.com/rhysd/actionlint/releases/tag/${ACTIONLINT_VERSION}" || rc=1
 	_check_url shfmt "https://github.com/mvdan/sh/releases/tag/${SHFMT_VERSION}" || rc=1
 	_check_url govulncheck "https://github.com/golang/vuln/releases/tag/${GOVULNCHECK_VERSION}" || rc=1
 	_check_url controller-gen "https://github.com/kubernetes-sigs/controller-tools/releases/tag/${CONTROLLER_GEN_VERSION}" || rc=1
 	_check_url setup-envtest "https://github.com/kubernetes-sigs/controller-runtime/releases/tag/${SETUP_ENVTEST_VERSION}" || rc=1
+
+	# The chart index, checked the same way as Cilium's and for the same reason.
+	local cnpg_index
+	cnpg_index="$(curl -fsSL --max-time 30 https://cloudnative-pg.github.io/charts/index.yaml || true)"
+	if grep -q "version: ${CNPG_CHART_VERSION}$" <<<"$cnpg_index"; then
+		printf '  ok       %-14s chart %s\n' cnpg-chart "$CNPG_CHART_VERSION"
+	else
+		printf '  MISSING  %-14s chart %s not in the cloudnative-pg index\n' cnpg-chart "$CNPG_CHART_VERSION"
+		rc=1
+	fi
 
 	# Buffered rather than piped into grep: under `set -o pipefail`, grep -q
 	# exiting early makes curl fail with SIGPIPE and the chart reads as missing.

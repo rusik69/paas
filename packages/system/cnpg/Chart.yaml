@@ -1,0 +1,12 @@
+apiVersion: v2
+name: cnpg
+description: >-
+  The CloudNativePG operator. Umbrella over the vendored upstream chart, so
+  upstream updates stay a re-vendor rather than a merge.
+type: application
+version: 0.1.0
+appVersion: "1.30.0"
+dependencies:
+  - name: cloudnative-pg
+    version: 0.29.0
+    repository: ""

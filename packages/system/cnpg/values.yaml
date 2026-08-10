@@ -1,0 +1,13 @@
+# Values reaching the vendored chart. Everything the platform decides lives
+# here, so the vendored directory stays a verbatim copy of upstream.
+cloudnative-pg:
+  # One replica: the operator leader-elects, and a second adds a standby that
+  # does nothing until the first fails. Revisit when there are tenants whose
+  # databases cannot wait out a pod reschedule.
+  replicaCount: 1
+  crds:
+    create: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi

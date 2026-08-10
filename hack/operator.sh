@@ -91,8 +91,14 @@ cmd_e2e_releases() {
 
 	cmd_publish v0.1.0
 
+	# cnpg stays in both releases. The upgrade is meant to exercise a value
+	# change and a removal, not to tear a real operator down and put it back.
 	cat >"${scratch}/packages.yaml" <<-'YAML'
 		packages:
+		  - name: cnpg
+		    chart: cnpg
+		    version: "0.1.0"
+		    stage: component
 		  - name: hello
 		    chart: hello
 		    version: "0.1.0"
