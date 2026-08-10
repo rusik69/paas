@@ -31,8 +31,15 @@ E2E_GATEWAY="${E2E_GATEWAY:-10.77.0.1}"
 # Two workers is the minimum that exercises DRBD replication and pod
 # anti-affinity honestly. replicated-3 therefore also places a replica on the
 # control plane, which is why it carries a data disk too.
+#
+# The control plane is the larger guest because it also runs the LINSTOR
+# controller — pinned there so losing a worker cannot take the storage control
+# plane with it (hack/manifests/piraeus.yaml). That controller is a JVM, and on
+# two vCPUs beside etcd and the API server its event loop blocked for seconds at
+# a time, it lost its leader lease, and every volume operation in the cluster
+# stalled behind it.
 NODES=(
-	"${CLUSTER_NAME}-cp-1:controlplane:10.77.0.11:52:54:00:77:00:0b:${CP_MEMORY:-2560}:${CP_VCPUS:-2}:12:20"
+	"${CLUSTER_NAME}-cp-1:controlplane:10.77.0.11:52:54:00:77:00:0b:${CP_MEMORY:-4096}:${CP_VCPUS:-3}:12:20"
 	"${CLUSTER_NAME}-w-1:worker:10.77.0.21:52:54:00:77:00:15:${WORKER_MEMORY:-3072}:${WORKER_VCPUS:-2}:12:20"
 	"${CLUSTER_NAME}-w-2:worker:10.77.0.22:52:54:00:77:00:16:${WORKER_MEMORY:-3072}:${WORKER_VCPUS:-2}:12:20"
 )
