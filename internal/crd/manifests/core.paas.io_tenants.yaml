@@ -176,6 +176,35 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              modules:
+                additionalProperties:
+                  description: ModuleStatus is where one module resolved to.
+                  properties:
+                    inherited:
+                      description: Inherited is false when this tenant provides the
+                        module itself.
+                      type: boolean
+                    namespace:
+                      description: Namespace is where that tenant's module runs.
+                      type: string
+                    tenant:
+                      description: |-
+                        Tenant is the name of the tenant providing the module — this one, or the
+                        nearest ancestor with it enabled.
+                      type: string
+                  required:
+                  - namespace
+                  - tenant
+                  type: object
+                description: |-
+                  Modules reports where each enabled module resolved to, keyed by module
+                  name. A child inheriting its parent's monitoring shows the parent here.
+
+                  Reported because resolution walks the ancestor chain and is otherwise
+                  invisible: "which monitoring stack serves this tenant" is the question
+                  ADR 0004 warns will be answered inconsistently, and this is the answer
+                  the platform actually used.
+                type: object
               namespace:
                 description: |-
                   Namespace is the path-derived namespace backing this tenant. Reported

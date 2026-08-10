@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -34,7 +35,11 @@ var (
 )
 
 func TestMain(m *testing.M) {
-	env := &envtest.Environment{}
+	// The Cilium policy kind, so the reconciler's applies are storable here.
+	// Enforcement is e2e's question; this is only about the objects.
+	env := &envtest.Environment{
+		CRDDirectoryPaths: []string{filepath.Join("testdata")},
+	}
 
 	cfg, err := env.Start()
 	restCfg = cfg

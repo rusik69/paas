@@ -10,6 +10,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -259,5 +260,67 @@ func TestRemoveFinalizer_PatchFailureIsReported(t *testing.T) {
 	r := &Reconciler{Client: c, Scheme: testScheme(t)}
 	if err := r.removeFinalizer(t.Context(), obj.DeepCopy()); !errors.Is(err, boom) {
 		t.Errorf("err = %v, want it to wrap the patch failure", err)
+	}
+}
+
+// A module declared on a child whose parent is missing cannot be resolved, and
+// reporting Ready anyway would claim an answer the platform does not have.
+func TestReconcile_UnresolvableModuleIsDegraded(t *testing.T) {
+	t.Parallel()
+
+	// A child in tenant-acme whose parent object does not exist.
+	orphan := &corev1alpha1.Tenant{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:  "tenant-acme",
+			Name:       "beta",
+			Finalizers: []string{Finalizer},
+		},
+		Spec: corev1alpha1.TenantSpec{
+			Plan:    corev1alpha1.PlanTrial,
+			Modules: map[string]corev1alpha1.Module{"monitoring": {Enabled: false}},
+		},
+	}
+	c := builder(t, orphan).Build()
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "tenant-acme", Name: "beta"}}
+	if _, err := (&Reconciler{Client: c, Scheme: testScheme(t)}).Reconcile(t.Context(), req); err == nil {
+		t.Fatal("an unresolvable module reported success")
+	}
+
+	var got corev1alpha1.Tenant
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(orphan), &got); err != nil {
+		t.Fatalf("get tenant: %v", err)
+	}
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, ConditionDegraded)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("Degraded = %+v, want True", cond)
+	}
+	if !strings.Contains(cond.Message, "monitoring") {
+		t.Errorf("Degraded message = %q, want it to name the module", cond.Message)
+	}
+}
+
+// A module no ancestor enables is simply absent, not an error: reporting it as
+// one would make every tenant without monitoring permanently Degraded.
+func TestReconcile_ModuleNoAncestorProvidesIsOmitted(t *testing.T) {
+	t.Parallel()
+
+	obj := live("solo", corev1alpha1.PlanTrial)
+	obj.Spec.Modules = map[string]corev1alpha1.Module{"monitoring": {Enabled: false}}
+	c := builder(t, obj).Build()
+
+	if _, err := (&Reconciler{Client: c, Scheme: testScheme(t)}).Reconcile(t.Context(), request("solo")); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	var got corev1alpha1.Tenant
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(obj), &got); err != nil {
+		t.Fatalf("get tenant: %v", err)
+	}
+	if _, ok := got.Status.Modules["monitoring"]; ok {
+		t.Errorf("status.modules = %v, want monitoring omitted when nothing provides it", got.Status.Modules)
+	}
+	if cond := apimeta.FindStatusCondition(got.Status.Conditions, ConditionReady); cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Errorf("Ready = %+v, want True — an absent module is not a failure", cond)
 	}
 }

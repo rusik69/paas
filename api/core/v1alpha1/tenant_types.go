@@ -80,10 +80,34 @@ type TenantStatus struct {
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 
+	// Modules reports where each enabled module resolved to, keyed by module
+	// name. A child inheriting its parent's monitoring shows the parent here.
+	//
+	// Reported because resolution walks the ancestor chain and is otherwise
+	// invisible: "which monitoring stack serves this tenant" is the question
+	// ADR 0004 warns will be answered inconsistently, and this is the answer
+	// the platform actually used.
+	// +optional
+	Modules map[string]ModuleStatus `json:"modules,omitempty"`
+
 	// +optional
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// ModuleStatus is where one module resolved to.
+type ModuleStatus struct {
+	// Tenant is the name of the tenant providing the module — this one, or the
+	// nearest ancestor with it enabled.
+	Tenant string `json:"tenant"`
+
+	// Namespace is where that tenant's module runs.
+	Namespace string `json:"namespace"`
+
+	// Inherited is false when this tenant provides the module itself.
+	// +optional
+	Inherited bool `json:"inherited,omitempty"`
 }
 
 // Tenant is a namespace, a quota, and a position in the tenant tree.

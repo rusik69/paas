@@ -99,6 +99,9 @@ that rolling back restores it.)*
 - `ResourceQuota` + `LimitRange` from `spec.plan`.
   *(Landed: three plans as a table in code, applied at every depth.)*
 - `CiliumNetworkPolicy` default-deny, with the label-based opt-ins.
+  *(Landed: per-namespace default-deny at every depth plus a per-pod
+  `policy.paas.io/allow-to-apiserver` opt-in. Enforcement is asserted on the cluster, not in
+  envtest — a fixture CRD there only proves the objects were written.)*
 - OIDC provider (Keycloak or Dex), group→RBAC binding, generated kubeconfig Secret.
 - Module enable/inherit resolution up the ancestor chain.
   *(Landed: `tenancy.Resolve`. The modules themselves are phase-3 packaging work.)*

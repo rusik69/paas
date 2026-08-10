@@ -96,7 +96,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err := r.apply(ctx, &t, namespace, limits); err != nil {
 		return ctrl.Result{}, r.degraded(ctx, &t, "ApplyFailed", err)
 	}
-	return ctrl.Result{}, r.ready(ctx, &t, namespace)
+
+	modules, err := r.resolveModules(ctx, &t)
+	if err != nil {
+		return ctrl.Result{}, r.degraded(ctx, &t, "ResolveFailed", err)
+	}
+	return ctrl.Result{}, r.ready(ctx, &t, namespace, modules)
 }
 
 func (r *Reconciler) apply(ctx context.Context, t *corev1alpha1.Tenant, namespace string, limits Limits) error {
@@ -127,18 +132,58 @@ func (r *Reconciler) apply(ctx context.Context, t *corev1alpha1.Tenant, namespac
 		},
 	}
 
+	// Isolation does not inherit: every namespace gets its own policies at every
+	// depth, because a child is not trusted for being someone's child.
+	for _, policy := range policiesFor(namespace, t.Name) {
+		objects = append(objects, policy)
+	}
+
 	for _, obj := range objects {
 		if err := r.Patch(ctx, obj, client.Apply,
 			client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
-			return fmt.Errorf("apply %T %s: %w", obj, obj.GetName(), err)
+			return fmt.Errorf("apply %s %s: %w",
+				obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName(), err)
 		}
 	}
 	return nil
 }
 
-func (r *Reconciler) ready(ctx context.Context, t *corev1alpha1.Tenant, namespace string) error {
+// resolveModules records where each module a tenant declares resolved to.
+//
+// Every module named anywhere in the tenant's own spec is resolved, including
+// ones it sets to false — false means "use my parent's", so those are exactly
+// the interesting entries.
+func (r *Reconciler) resolveModules(ctx context.Context, t *corev1alpha1.Tenant) (map[string]corev1alpha1.ModuleStatus, error) {
+	if len(t.Spec.Modules) == 0 {
+		return nil, nil
+	}
+
+	out := make(map[string]corev1alpha1.ModuleStatus, len(t.Spec.Modules))
+	for name := range t.Spec.Modules {
+		provider, found, err := tenancy.Resolve(ctx, r.Client, t, name)
+		if err != nil {
+			return nil, fmt.Errorf("resolve module %q: %w", name, err)
+		}
+		if !found {
+			continue
+		}
+		providerNamespace, err := tenancy.NamespaceOf(provider)
+		if err != nil {
+			return nil, fmt.Errorf("namespace of module %q provider: %w", name, err)
+		}
+		out[name] = corev1alpha1.ModuleStatus{
+			Tenant:    provider.Name,
+			Namespace: providerNamespace,
+			Inherited: provider.Name != t.Name || provider.Namespace != t.Namespace,
+		}
+	}
+	return out, nil
+}
+
+func (r *Reconciler) ready(ctx context.Context, t *corev1alpha1.Tenant, namespace string, modules map[string]corev1alpha1.ModuleStatus) error {
 	t.Status.ObservedGeneration = t.Generation
 	t.Status.Namespace = namespace
+	t.Status.Modules = modules
 	setCondition(t, ConditionReady, metav1.ConditionTrue, "Reconciled",
 		"namespace "+namespace+" is provisioned")
 	setCondition(t, ConditionDegraded, metav1.ConditionFalse, "Reconciled", "")

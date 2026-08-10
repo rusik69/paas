@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -248,4 +251,111 @@ func TestTenant_DeletionAsksTheNamespaceToGoAndHoldsTheTenant(t *testing.T) {
 
 func TestTenant_MissingObjectIsNotAnError(t *testing.T) {
 	reconcileIn(t, tenancy.RootNamespace, "never-existed", tenantReconciler())
+}
+
+// policy reads one of the tenant's CiliumNetworkPolicies.
+func policy(t *testing.T, namespace, name string) *unstructured.Unstructured {
+	t.Helper()
+
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "cilium.io", Version: "v2", Kind: "CiliumNetworkPolicy",
+	})
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+	if err := k8sClient.Get(t.Context(), key, obj); err != nil {
+		t.Fatalf("get ciliumnetworkpolicy %s/%s: %v", namespace, name, err)
+	}
+	return obj
+}
+
+// Every namespace gets its own policies at every depth. ADR 0004: isolation
+// does not inherit.
+func TestTenant_EveryDepthGetsItsOwnPolicies(t *testing.T) {
+	newTenant(t, tenancy.RootNamespace, "walled", corev1alpha1.PlanBusiness)
+	reconcileIn(t, tenancy.RootNamespace, "walled", tenantReconciler())
+
+	newTenant(t, "tenant-walled", "inner", corev1alpha1.PlanTrial)
+	reconcileIn(t, "tenant-walled", "inner", tenantReconciler())
+
+	for _, ns := range []string{"tenant-walled", "tenant-walled-inner"} {
+		deny := policy(t, ns, tenantctl.PolicyDefaultDeny)
+
+		// An empty endpointSelector is what makes the policy select every pod,
+		// and therefore what makes Cilium deny by default in this namespace.
+		selector, found, err := unstructured.NestedMap(deny.Object, "spec", "endpointSelector")
+		if err != nil || !found || len(selector) != 0 {
+			t.Errorf("%s: endpointSelector = %v (found %t, err %v), want empty so it selects every pod",
+				ns, selector, found, err)
+		}
+
+		// Egress must be an allow-list, not an empty rule that permits
+		// everything.
+		egress, found, err := unstructured.NestedSlice(deny.Object, "spec", "egress")
+		if err != nil || !found || len(egress) == 0 {
+			t.Errorf("%s: egress = %v, want an allow-list", egress, err)
+		}
+
+		// Nothing may name the API server in the deny policy; that is what the
+		// opt-in exists for.
+		if strings.Contains(fmt.Sprint(deny.Object), "kube-apiserver") {
+			t.Errorf("%s: the default-deny policy grants API server access", ns)
+		}
+
+		opt := policy(t, ns, tenantctl.PolicyAllowAPIServer)
+		labels, _, _ := unstructured.NestedStringMap(opt.Object, "spec", "endpointSelector", "matchLabels")
+		if labels[tenantctl.AllowAPIServerLabel] != "true" {
+			t.Errorf("%s: opt-in selects %v, want %s=true",
+				ns, labels, tenantctl.AllowAPIServerLabel)
+		}
+		if !strings.Contains(fmt.Sprint(opt.Object), "kube-apiserver") {
+			t.Errorf("%s: the opt-in policy grants nothing", ns)
+		}
+	}
+}
+
+// The point of the hierarchy, made observable: a child with monitoring off
+// reports its parent as the provider.
+func TestTenant_StatusReportsWhereModulesResolved(t *testing.T) {
+	parent := newTenant(t, tenancy.RootNamespace, "org", corev1alpha1.PlanBusiness)
+	parent.Spec.Modules = map[string]corev1alpha1.Module{"monitoring": {Enabled: true}}
+	if err := k8sClient.Update(t.Context(), parent); err != nil {
+		t.Fatalf("enable monitoring on the parent: %v", err)
+	}
+	reconcileIn(t, tenancy.RootNamespace, "org", tenantReconciler())
+
+	child := newTenant(t, "tenant-org", "team", corev1alpha1.PlanTrial)
+	child.Spec.Modules = map[string]corev1alpha1.Module{"monitoring": {Enabled: false}}
+	if err := k8sClient.Update(t.Context(), child); err != nil {
+		t.Fatalf("disable monitoring on the child: %v", err)
+	}
+	reconcileIn(t, "tenant-org", "team", tenantReconciler())
+
+	var got corev1alpha1.Tenant
+	key := types.NamespacedName{Namespace: "tenant-org", Name: "team"}
+	if err := k8sClient.Get(t.Context(), key, &got); err != nil {
+		t.Fatalf("get child tenant: %v", err)
+	}
+
+	resolved, ok := got.Status.Modules["monitoring"]
+	if !ok {
+		t.Fatalf("status.modules = %v, want monitoring resolved", got.Status.Modules)
+	}
+	if resolved.Tenant != "org" {
+		t.Errorf("monitoring resolved to %q, want org — false on a child means use the parent's", resolved.Tenant)
+	}
+	if resolved.Namespace != "tenant-org" {
+		t.Errorf("monitoring namespace = %q, want tenant-org", resolved.Namespace)
+	}
+	if !resolved.Inherited {
+		t.Error("monitoring is not marked inherited, but the child does not provide it")
+	}
+
+	// The parent provides its own, and must not be marked inherited.
+	var parentGot corev1alpha1.Tenant
+	if err := k8sClient.Get(t.Context(), client.ObjectKeyFromObject(parent), &parentGot); err != nil {
+		t.Fatalf("get parent tenant: %v", err)
+	}
+	if own := parentGot.Status.Modules["monitoring"]; own.Tenant != "org" || own.Inherited {
+		t.Errorf("parent monitoring = %+v, want org and not inherited", own)
+	}
 }
