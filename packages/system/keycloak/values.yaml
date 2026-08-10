@@ -49,6 +49,12 @@ keycloakx:
       value: "https://10.96.0.31:8443"
     - name: KC_HOSTNAME_STRICT
       value: "false"
+    # Certificates turn on TLS for the management interface too, and the chart's
+    # health probes speak plain HTTP to it — so Keycloak starts, imports its
+    # realm, serves both ports, and never becomes Ready. TLS belongs on the
+    # client-facing port; the probes are localhost traffic inside the pod.
+    - name: KC_HTTP_MANAGEMENT_SCHEME
+      value: http
 
   extraVolumes: |
     - name: tls
