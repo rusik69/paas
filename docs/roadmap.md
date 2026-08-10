@@ -105,8 +105,10 @@ that rolling back restores it.)*
 - OIDC provider (Keycloak or Dex), group→RBAC binding, generated kubeconfig Secret.
   *(Landed: `tenant-admin`/`tenant-viewer` bound to the tenant's OIDC group and to every
   ancestor's admins, plus a namespace-pinned CI kubeconfig proven usable in e2e. The provider
-  itself is outstanding and blocked: Keycloak needs a database, which is CloudNativePG in
-  phase 3. The CI token is long-lived rather than bound — a refresh loop is unwritten.)*
+  Keycloak and its CloudNativePG database are delivered by the platform and proven up. What
+  remains is making the API server trust it, designed in
+  [the OIDC spec](superpowers/specs/2026-08-10-phase-2-apiserver-oidc-design.md) and not yet
+  built. The CI token is long-lived rather than bound — a refresh loop is unwritten.)*
 - Module enable/inherit resolution up the ancestor chain.
   *(Landed: `tenancy.Resolve`. The modules themselves are phase-3 packaging work.)*
 

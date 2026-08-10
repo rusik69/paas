@@ -1,0 +1,88 @@
+# Phase 2, part 3 — making the API server trust Keycloak
+
+- **Status:** proposed, not implemented
+- **Date:** 2026-08-10
+- **Covers:** the last of roadmap phase 2 — the OIDC provider actually being an
+  authentication source, rather than a running pod
+- **Depends on:** Keycloak and its CloudNativePG database, both landed and proven by
+  `TestKeycloak_ServesItsDiscoveryDocument`
+
+## What is already true
+
+`tenant-admin` and `tenant-viewer` are bound to `paas:tenant:<name>` groups in every tenant
+namespace, and Keycloak is running. Those bindings currently match nothing, because the API
+server has never been told to trust any issuer. This is the link between the two.
+
+## The constraint that decides the design
+
+**The API server runs in the host network namespace and does not use cluster DNS.** It cannot
+resolve `keycloak.paas-system.svc.cluster.local`, so the issuer URL cannot be a Service DNS
+name — which is the obvious first choice and a dead end.
+
+It *can* reach a Service ClusterIP: Cilium's socket load balancer programs the host namespace,
+and phase 0 already proves it with `TestRegistry_ClusterIPReachableFromHostNetwork`, where
+containerd on every node reaches the registry at a pinned `10.96.0.30`.
+
+So Keycloak follows the registry's pattern: a **pinned ClusterIP**, and an issuer URL built
+from it.
+
+A second constraint compounds it: **Kubernetes requires the OIDC issuer to be HTTPS.** Keycloak
+currently runs `start-dev` over plain HTTP, which is why this is not simply four extra flags.
+
+## The design
+
+**One CA, generated at bring-up.** `hack/e2e.sh` mints a CA and a serving certificate whose
+SAN is the pinned IP, alongside the Talos PKI it already generates into `.e2e/`. Generated
+rather than committed, because a committed private key is a private key in a public repository
+whatever the README says about it being for tests.
+
+**The API server is told about it through Talos machine config**, in
+`hack/talos/controlplane.patch.yaml`:
+
+- `machine.files` writes the CA bundle to a path on the control-plane node. The API server
+  reads `--oidc-ca-file` from disk, so the CA has to exist as a file on the host — a Secret is
+  not reachable from where the API server runs.
+- `cluster.apiServer.extraArgs` carries `oidc-issuer-url`, `oidc-client-id`,
+  `oidc-username-claim`, `oidc-groups-claim` and `oidc-ca-file`.
+
+`oidc-groups-claim` must be the claim Keycloak actually emits, and Keycloak does not put group
+membership in tokens by default — a group membership mapper has to be configured on the client,
+or the claim is simply absent and every binding still matches nothing. This is the step most
+likely to be skipped and to produce a silent no-op.
+
+**Keycloak serves HTTPS** from the generated certificate, mounted as a Secret, with
+`KC_HOSTNAME` set to the same `https://<ip>:<port>` the issuer URL uses. Keycloak stamps that
+value into the `iss` claim, and the API server rejects a token whose issuer does not match its
+configured URL exactly — including the port and any trailing path.
+
+**The realm is provisioned by import**, not by hand: a realm export JSON in the Keycloak
+package, mounted and imported at startup, defining the `paas` realm, a `kubernetes` client, a
+groups mapper, and a test user in `paas:tenant:acme`.
+
+## What proves it
+
+An e2e that obtains a token from Keycloak for a user in `paas:tenant:acme`, builds a
+kubeconfig from it, and then:
+
+- reads the tenant's own namespace successfully;
+- gets a **403** — not any error — from another tenant's namespace and from `kube-system`.
+
+The positive half matters as much as the negative: a token that authenticates nobody produces
+a 401 everywhere, which would pass a carelessly written negative test. The same trap the
+network-policy tests already avoid with their controls.
+
+## Risks
+
+**A bad `--oidc-issuer-url` can stop the API server coming up**, and on a single control-plane
+node that is the cluster. The flags should be added and a bring-up proven *before* anything
+depends on them, and `hack/e2e.sh` should be run end to end on the first attempt rather than
+layering the Keycloak TLS change on top of an unverified control-plane change.
+
+**A pinned ClusterIP is a second hardcoded address**, after the registry's. Both now need to
+stay inside the service CIDR and not collide. If a third appears, they belong in one place with
+the CIDR that constrains them.
+
+**The issuer is only reachable in-cluster.** A developer's `kubectl` on the host can reach the
+ClusterIP only because Cilium programs the host namespace on cluster nodes — a laptop cannot.
+Real deployments publish the issuer through the Gateway with a real certificate; this design is
+honest for the dev cluster and should not be mistaken for the production shape.
