@@ -32,10 +32,30 @@ func TestCNPG_OperatorIsDeliveredByThePlatform(t *testing.T) {
 
 	waitCNPGOperator(t, 10*time.Minute)
 
+	// The version pinned in hack/versions.sh, running. A chart that installed an
+	// unexpected app version would otherwise pass here unnoticed.
+	assertCNPGVersion(t)
+
 	// The CRD the tenant-facing Postgres kind will be built on in phase 3.
 	if _, err := dynClient.Resource(clusterGVR).Namespace("default").
 		List(t.Context(), metav1.ListOptions{}); err != nil {
 		t.Errorf("the cnpg Cluster kind is not served: %v", err)
+	}
+}
+
+// assertCNPGVersion checks the running operator against the pinned app version.
+func assertCNPGVersion(t *testing.T) {
+	t.Helper()
+
+	want := pinnedVersion(t, "CNPG_VERSION")
+	list, err := clientset.AppsV1().Deployments(platformNamespace).List(t.Context(), metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/name=cloudnative-pg",
+	})
+	if err != nil || len(list.Items) == 0 {
+		t.Fatalf("list cnpg deployments: %v", err)
+	}
+	if got := list.Items[0].Labels["app.kubernetes.io/version"]; got != want {
+		t.Errorf("cnpg version = %q, want %q as pinned in hack/versions.sh", got, want)
 	}
 }
 
@@ -48,7 +68,13 @@ func waitCNPGOperator(t *testing.T, timeout time.Duration) {
 
 	var last string
 	err := wait.For(ctx, 5*time.Second, "cnpg operator available", func(ctx context.Context) (bool, error) {
-		list, err := clientset.AppsV1().Deployments(platformNamespace).List(ctx, metav1.ListOptions{})
+		// By label, not by name: helm-controller derives the release name from
+		// the target namespace, so the Deployment is
+		// paas-system-cnpg-cloudnative-pg rather than anything this test could
+		// reasonably hardcode. The chart's own label is stable.
+		list, err := clientset.AppsV1().Deployments(platformNamespace).List(ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/name=cloudnative-pg",
+		})
 		if err != nil {
 			if ctx.Err() == nil {
 				last = err.Error()
@@ -56,13 +82,14 @@ func waitCNPGOperator(t *testing.T, timeout time.Duration) {
 			return false, nil
 		}
 		for _, d := range list.Items {
-			if d.Name != "cnpg-cloudnative-pg" {
-				continue
+			last = fmt.Sprintf("%s available=%d/%d", d.Name, d.Status.AvailableReplicas, d.Status.Replicas)
+			if d.Status.AvailableReplicas > 0 {
+				return true, nil
 			}
-			last = fmt.Sprintf("available=%d/%d", d.Status.AvailableReplicas, d.Status.Replicas)
-			return d.Status.AvailableReplicas > 0, nil
 		}
-		last = "no cnpg deployment yet"
+		if len(list.Items) == 0 {
+			last = "no cnpg deployment yet"
+		}
 		return false, nil
 	})
 	if err != nil {
