@@ -103,6 +103,10 @@ that rolling back restores it.)*
   `policy.paas.io/allow-to-apiserver` opt-in. Enforcement is asserted on the cluster, not in
   envtest — a fixture CRD there only proves the objects were written.)*
 - OIDC provider (Keycloak or Dex), group→RBAC binding, generated kubeconfig Secret.
+  *(Landed: `tenant-admin`/`tenant-viewer` bound to the tenant's OIDC group and to every
+  ancestor's admins, plus a namespace-pinned CI kubeconfig proven usable in e2e. The provider
+  itself is outstanding and blocked: Keycloak needs a database, which is CloudNativePG in
+  phase 3. The CI token is long-lived rather than bound — a refresh loop is unwritten.)*
 - Module enable/inherit resolution up the ancestor chain.
   *(Landed: `tenancy.Resolve`. The modules themselves are phase-3 packaging work.)*
 

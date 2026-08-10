@@ -131,10 +131,13 @@ func probe(t *testing.T, namespace, name, host string, port int, labels map[stri
 func TestTenancy_NestedTenantsAreIsolatedAndInheritModules(t *testing.T) {
 	ensureRootNamespace(t)
 
+	// The parent's namespace has to exist before a child can be created inside
+	// it — the tree is expressed by containment, so the child object has
+	// nowhere to live until the operator has reconciled the parent.
 	applyTenant(t, rootNamespace, "acme", "business", true)
-	applyTenant(t, "tenant-acme", "beta", "trial", false)
-
 	waitNamespace(t, "tenant-acme", 3*time.Minute)
+
+	applyTenant(t, "tenant-acme", "beta", "trial", false)
 	waitNamespace(t, "tenant-acme-beta", 3*time.Minute)
 
 	// Inheritance: the child declares monitoring off, which means "use my

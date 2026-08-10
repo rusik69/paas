@@ -66,6 +66,10 @@ spec:
           args:
             - --metrics-bind-address=0
             - --insecure-registry=true
+            # Generated tenant kubeconfigs are for use outside the cluster, so
+            # they cannot point at the API Service ClusterIP the operator itself
+            # dials.
+            - --api-endpoint-url=${API_ENDPOINT_URL}
           # The image is one static binary and nothing else, so it needs no
           # privileges at all. Stated rather than left default, because the
           # restricted Pod Security standard is what tenant namespaces will

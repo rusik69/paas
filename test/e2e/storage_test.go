@@ -13,6 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/rusik69/paas/pkg/wait"
 )
@@ -79,6 +80,13 @@ func TestStorage_Replicated3SurvivesLossOfPrimaryNode(t *testing.T) {
 		t.Fatalf("node %s never left Ready after power-off: %v", primary, err)
 	}
 
+	// Kubernetes will not detach a volume from a node it cannot reach unless
+	// that node is declared out of service. Without this the replacement pod
+	// sits in ContainerCreating behind a Multi-Attach error until the dead node
+	// returns, which is the opposite of what failover means — and it is the
+	// documented procedure for a non-graceful shutdown, not a test shortcut.
+	markOutOfService(t, primary)
+
 	// The pod object outlives its node, and eviction waits out the unreachable
 	// toleration. Force-deleting is what an operator does, and what the App
 	// controller will do in phase 4.
@@ -97,13 +105,15 @@ func TestStorage_Replicated3SurvivesLossOfPrimaryNode(t *testing.T) {
 	reader.Spec.RestartPolicy = corev1.RestartPolicyNever
 	createPod(t, ns, reader)
 
-	// Fifteen minutes, because what this asserts is that the data survived, not
-	// that failover was quick. After a node is destroyed the CSI attach retries
-	// on the kubelet's backoff, and cluster DNS churns while Cilium re-resolves
-	// identities — observed here as ControllerPublishVolume failing to look up
-	// linstor-controller for several minutes. Ten was enough on an idle cluster
-	// and marginal on a busy one; failover latency deserves its own assertion
-	// with its own budget rather than being smuggled into this one.
+	// Generous on purpose, and no longer load-bearing. This budget was raised
+	// twice while the real problem was elsewhere: the volume stayed attached to
+	// the destroyed node, so the replacement pod sat behind a Multi-Attach error
+	// no amount of waiting would clear. Marking the node out of service fixed
+	// that, and the test now finishes in about three minutes.
+	//
+	// The ceiling stays because what this asserts is that the data survived, not
+	// that failover was quick — failover latency deserves its own assertion with
+	// its own budget rather than being smuggled into this one.
 	phase, err := waitPodTerminated(t, ns, "reader", 15*time.Minute)
 	if err != nil {
 		t.Fatalf("reader pod did not terminate: %v", err)
@@ -122,6 +132,7 @@ func TestStorage_Replicated3SurvivesLossOfPrimaryNode(t *testing.T) {
 	if err := waitNodeReadyIs(t, primary, corev1.ConditionTrue, 10*time.Minute); err != nil {
 		t.Fatalf("node %s did not rejoin after power-on: %v", primary, err)
 	}
+	clearOutOfService(t, primary)
 	if err := waitVolumeUpToDate(t, volumeName, 10*time.Minute); err != nil {
 		t.Fatalf("DRBD did not resync %s after the node returned: %v", volumeName, err)
 	}
@@ -357,4 +368,45 @@ func linstor(ctx context.Context, args ...string) (string, error) {
 		return string(out), fmt.Errorf("linstor %s: %w", strings.Join(args, " "), err)
 	}
 	return string(out), nil
+}
+
+// OutOfServiceTaint tells Kubernetes a node is genuinely gone, which is what
+// permits volumes to be detached from it and reattached elsewhere.
+const OutOfServiceTaint = "node.kubernetes.io/out-of-service"
+
+func markOutOfService(t *testing.T, node string) {
+	t.Helper()
+
+	patch := []byte(`[{"op":"add","path":"/spec/taints/-","value":` +
+		`{"key":"` + OutOfServiceTaint + `","value":"nodeshutdown","effect":"NoExecute"}}]`)
+	if _, err := clientset.CoreV1().Nodes().Patch(t.Context(), node,
+		types.JSONPatchType, patch, metav1.PatchOptions{}); err != nil {
+		// A node with no taints has no array to append to; fall back to a merge
+		// that creates one.
+		merge := []byte(`{"spec":{"taints":[{"key":"` + OutOfServiceTaint +
+			`","value":"nodeshutdown","effect":"NoExecute"}]}}`)
+		if _, err2 := clientset.CoreV1().Nodes().Patch(t.Context(), node,
+			types.MergePatchType, merge, metav1.PatchOptions{}); err2 != nil {
+			t.Fatalf("mark %s out of service: %v (and %v)", node, err, err2)
+		}
+	}
+}
+
+func clearOutOfService(t *testing.T, node string) {
+	t.Helper()
+
+	got, err := clientset.CoreV1().Nodes().Get(t.Context(), node, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get node %s: %v", node, err)
+	}
+	kept := got.Spec.Taints[:0]
+	for _, taint := range got.Spec.Taints {
+		if taint.Key != OutOfServiceTaint {
+			kept = append(kept, taint)
+		}
+	}
+	got.Spec.Taints = kept
+	if _, err := clientset.CoreV1().Nodes().Update(t.Context(), got, metav1.UpdateOptions{}); err != nil {
+		t.Fatalf("clear the out-of-service taint from %s: %v", node, err)
+	}
 }

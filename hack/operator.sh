@@ -68,7 +68,14 @@ cmd_publish() {
 cmd_deploy() {
 	require_tools kubectl envsubst
 	step "deploying the operator"
-	OPERATOR_IMAGE="$OPERATOR_IMAGE" envsubst <"${HERE}/manifests/operator.yaml" |
+	# Whatever this kubeconfig dials is by definition reachable from outside the
+	# cluster, which is exactly what a tenant's CI kubeconfig needs.
+	local api_url
+	api_url="$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')"
+	[[ -n "$api_url" ]] || die "cannot read the API server URL from the current kubeconfig"
+
+	OPERATOR_IMAGE="$OPERATOR_IMAGE" API_ENDPOINT_URL="$api_url" \
+		envsubst <"${HERE}/manifests/operator.yaml" |
 		kubectl apply --server-side -f - >/dev/null
 	kubectl -n "$REGISTRY_NAMESPACE" rollout status deploy/paas-operator --timeout=5m
 	log "operator is running"

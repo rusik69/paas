@@ -35,6 +35,13 @@ func main() {
 
 	metricsAddress := flag.String("metrics-bind-address", ":8080",
 		`address the metrics endpoint binds to; "0" disables it`)
+	// The address a tenant's CI kubeconfig should dial. The operator's own
+	// connection is the in-cluster ClusterIP, which is correct for pods and
+	// useless to anything outside — so an externally reachable URL has to be
+	// supplied, and there is nowhere the operator could infer it from.
+	apiEndpoint := flag.String("api-endpoint-url", "",
+		"externally reachable API server URL for generated tenant kubeconfigs; "+
+			"empty disables kubeconfig generation")
 	insecureRegistry := flag.Bool("insecure-registry", true,
 		"pull release artifacts over plain HTTP; the in-cluster registry speaks it")
 	flag.Parse()
@@ -44,13 +51,13 @@ func main() {
 	// logs at all during an incident.
 	ctrllog.SetLogger(zap.New(zap.UseFlagOptions(&zapOpts)))
 
-	if err := run(*installTimeout, *metricsAddress, *insecureRegistry); err != nil {
+	if err := run(*installTimeout, *metricsAddress, *apiEndpoint, *insecureRegistry); err != nil {
 		fmt.Fprintf(os.Stderr, "paas-operator: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(installTimeout time.Duration, metricsAddress string, insecureRegistry bool) error {
+func run(installTimeout time.Duration, metricsAddress, apiEndpoint string, insecureRegistry bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -68,7 +75,7 @@ func run(installTimeout time.Duration, metricsAddress string, insecureRegistry b
 
 	mgr, err := operator.NewManager(cfg, operator.Options{
 		MetricsAddress: metricsAddress,
-		APIEndpoint:    tenant.APIEndpoint{URL: cfg.Host, CA: apiServerCA(cfg)},
+		APIEndpoint:    tenant.APIEndpoint{URL: apiEndpoint, CA: apiServerCA(cfg)},
 		Fetcher:        &platform.OCIFetcher{Insecure: insecureRegistry},
 	})
 	if err != nil {
