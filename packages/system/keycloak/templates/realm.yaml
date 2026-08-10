@@ -9,6 +9,11 @@
     - full.path false. With it true the claim carries "/paas:tenant:acme", and
       the bindings name "paas:tenant:acme" — a leading slash is enough to make
       every authorization decision come out empty.
+    - the audience mapper. Keycloak puts "account" in a public client's aud
+      claim, not the client id, and the API server rejects a token whose
+      audience does not contain its --oidc-client-id. Without this the token is
+      issued, presented, and refused with a bare 401 that says nothing about
+      why.
 */ -}}
 apiVersion: v1
 kind: ConfigMap
@@ -31,6 +36,16 @@ data:
           "standardFlowEnabled": true,
           "directAccessGrantsEnabled": true,
           "protocolMappers": [
+            {
+              "name": "audience",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "config": {
+                "included.client.audience": {{ .Values.oidc.clientId | quote }},
+                "id.token.claim": "false",
+                "access.token.claim": "true"
+              }
+            },
             {
               "name": "groups",
               "protocol": "openid-connect",
