@@ -5,7 +5,10 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ .Release.Name }}
+  # Named for the chart, not the release: helm-controller derives release names
+  # from the target namespace, so {{ .Release.Name }} would be
+  # paas-system-hello and would change again if the namespace ever did.
+  name: {{ .Chart.Name }}
   namespace: {{ .Release.Namespace }}
 spec:
   backoffLimit: 0
