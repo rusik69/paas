@@ -94,10 +94,14 @@ that rolling back restores it.)*
 `Tenant` reconciler and the isolation story.
 
 - Namespace tree with path-derived names, 63-character guard.
+  *(Landed: `core.paas.io/Tenant`, `pkg/tenancy` as the only place the tree is interpreted, and
+  the reconciler. A name over the limit is refused, never truncated.)*
 - `ResourceQuota` + `LimitRange` from `spec.plan`.
+  *(Landed: three plans as a table in code, applied at every depth.)*
 - `CiliumNetworkPolicy` default-deny, with the label-based opt-ins.
 - OIDC provider (Keycloak or Dex), group→RBAC binding, generated kubeconfig Secret.
 - Module enable/inherit resolution up the ancestor chain.
+  *(Landed: `tenancy.Resolve`. The modules themselves are phase-3 packaging work.)*
 
 **Done when:** two nested tenants exist, the child inherits its parent's monitoring, and a
 negative network test proves cross-tenant traffic and pod→apiserver access both fail.

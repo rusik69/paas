@@ -19,7 +19,7 @@ ENVTEST_K8S_VERSION ?= 1.34.x
 #
 # Add a package here when it becomes load-bearing. Raise the floor when a phase
 # lands above it; never lower it to make a red build green.
-COVERED_PACKAGES ?= internal/controller/packagesource internal/controller/pkg internal/controller/platform internal/crd internal/flux internal/kube internal/operator pkg/wait
+COVERED_PACKAGES ?= internal/controller/packagesource internal/controller/pkg internal/controller/platform internal/controller/tenant internal/crd internal/flux internal/kube internal/operator pkg/tenancy pkg/wait
 COVERAGE_MIN ?= 95
 MODULE := github.com/rusik69/paas
 

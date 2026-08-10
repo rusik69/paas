@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	corev1alpha1 "github.com/rusik69/paas/api/core/v1alpha1"
 	"github.com/rusik69/paas/api/platform/v1alpha1"
 	"github.com/rusik69/paas/internal/crd"
 	"github.com/rusik69/paas/internal/flux"
@@ -48,6 +49,7 @@ func TestMain(m *testing.M) {
 		clientgoscheme.AddToScheme,
 		apiextensionsv1.AddToScheme,
 		v1alpha1.AddToScheme,
+		corev1alpha1.AddToScheme,
 		sourcev1.AddToScheme,
 		helmv2.AddToScheme,
 	} {

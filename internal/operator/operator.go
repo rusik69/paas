@@ -19,10 +19,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	corev1alpha1 "github.com/rusik69/paas/api/core/v1alpha1"
 	"github.com/rusik69/paas/api/platform/v1alpha1"
 	"github.com/rusik69/paas/internal/controller/packagesource"
 	pkgctl "github.com/rusik69/paas/internal/controller/pkg"
 	"github.com/rusik69/paas/internal/controller/platform"
+	"github.com/rusik69/paas/internal/controller/tenant"
 )
 
 // Scheme carries every kind the operator reads or writes. Registered once into
@@ -34,6 +36,7 @@ var Scheme = func() *runtime.Scheme {
 		clientgoscheme.AddToScheme,
 		apiextensionsv1.AddToScheme,
 		v1alpha1.AddToScheme,
+		corev1alpha1.AddToScheme,
 		sourcev1.AddToScheme,
 		helmv2.AddToScheme,
 	} {
@@ -76,6 +79,7 @@ func NewManager(cfg *rest.Config, opts Options) (manager.Manager, error) {
 		{"platform", (&platform.Reconciler{
 			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Fetcher: opts.Fetcher,
 		}).SetupWithManager},
+		{"tenant", (&tenant.Reconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()}).SetupWithManager},
 	}
 	for _, s := range setups {
 		if err := s.setup(mgr); err != nil {

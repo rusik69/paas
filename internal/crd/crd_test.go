@@ -29,6 +29,7 @@ func TestLoad_ReturnsEveryEmbeddedCRD(t *testing.T) {
 		"packages.platform.paas.io",
 		"packagesources.platform.paas.io",
 		"platforms.platform.paas.io",
+		"tenants.core.paas.io",
 	}
 
 	less := func(a, b string) bool { return a < b }
@@ -49,8 +50,10 @@ func TestLoad_CRDsAreWellFormed(t *testing.T) {
 	}
 
 	for _, c := range crds {
-		if c.Spec.Group != "platform.paas.io" {
-			t.Errorf("%s group = %q, want platform.paas.io", c.Name, c.Spec.Group)
+		// Any of ours, not one group: api/ is one package per group and the
+		// operator installs all of them.
+		if !strings.HasSuffix(c.Spec.Group, ".paas.io") {
+			t.Errorf("%s group = %q, want a .paas.io group", c.Name, c.Spec.Group)
 		}
 		if len(c.Spec.Versions) == 0 {
 			t.Errorf("%s declares no versions", c.Name)
