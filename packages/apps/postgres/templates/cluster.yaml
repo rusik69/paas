@@ -21,3 +21,23 @@ spec:
     requests:
       cpu: {{ .Values.resources.cpu | quote }}
       memory: {{ .Values.resources.memory | quote }}
+  {{- /*
+    CNPG's instance manager watches its own Cluster through the API server,
+    and a tenant namespace denies pod egress to it by default
+    (internal/controller/tenant/policy.go) unless a pod opts in with this
+    exact label. Without it initdb never sees its Cluster come back and
+    retries forever — this is not a stray label, do not remove it.
+
+    The chart-contract labels are propagated here too, to the pods and PVCs
+    CNPG creates for this Cluster, not just the Cluster object itself.
+    Nothing reads them off anything but the Cluster today
+    (service.Reconciler.readStatusFrom lists only that kind), but making
+    every object CNPG creates attributable to the Postgres that asked for it
+    is what the design's chart contract is reaching for, and propagating
+    costs nothing.
+  */}}
+  inheritedMetadata:
+    labels:
+      policy.paas.io/allow-to-apiserver: "true"
+      paas.io/service-name: {{ .Release.Name }}
+      paas.io/service-namespace: {{ .Release.Namespace }}
