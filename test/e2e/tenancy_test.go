@@ -172,6 +172,55 @@ func TestTenancy_NestedTenantsAreIsolatedAndInheritModules(t *testing.T) {
 	}
 }
 
+// The allowance defaultDenyPolicy grants paas-system: the platform's own
+// operators (CNPG among them) provision workloads inside a tenant namespace
+// and then have to poll them, which no per-pod label can express — the source
+// is the operator's own namespace, not anything the tenant runs.
+//
+// Cross-tenant traffic is already asserted denied in
+// TestTenancy_NestedTenantsAreIsolatedAndInheritModules; nothing here repeats
+// it.
+func TestTenancy_PlatformNamespaceReachesTenantWorkloads(t *testing.T) {
+	ensureRootNamespace(t)
+	applyTenant(t, rootNamespace, "svcreach", "trial", false)
+	waitNamespace(t, "tenant-svcreach", 3*time.Minute)
+
+	target := serveInNamespace(t, "tenant-svcreach", "listener")
+
+	// Positive control: the listener answers something before concluding
+	// paas-system's own reach to it is what the policy decides.
+	if !probe(t, "tenant-svcreach", "same-ns", sameNamespaceTarget(t, "tenant-svcreach"), 8080, nil) {
+		t.Fatal("a pod could not reach another pod in its own namespace; the platform-reach assertion below would prove nothing")
+	}
+
+	if !probe(t, platformNamespace, "from-platform", target, 8080, nil) {
+		t.Error("a pod in paas-system could not reach a listener in a tenant namespace; " +
+			"the operator-to-workload ingress the platform's managed services depend on is not allowed")
+	}
+}
+
+// The other half of the same fix: the allowance is ingress-only, and nothing
+// else proves the egress direction — a tenant pod dialling into paas-system —
+// stayed shut.
+func TestTenancy_TenantCannotReachPlatformNamespace(t *testing.T) {
+	ensureRootNamespace(t)
+	applyTenant(t, rootNamespace, "svcegress", "trial", false)
+	waitNamespace(t, "tenant-svcegress", 3*time.Minute)
+
+	// Positive control: this tenant's own connectivity works at all, so a
+	// failure to reach paas-system below is the policy, not a broken pod or a
+	// dead listener.
+	if !probe(t, "tenant-svcegress", "same-ns", sameNamespaceTarget(t, "tenant-svcegress"), 8080, nil) {
+		t.Fatal("a pod could not reach another pod in its own namespace; the egress denial below would prove nothing")
+	}
+
+	target := serveInNamespace(t, platformNamespace, "e2e-egress-target")
+
+	if probe(t, "tenant-svcegress", "to-platform", target, 8080, nil) {
+		t.Error("a tenant pod reached paas-system; the fix for operator ingress was meant to stay ingress-only")
+	}
+}
+
 func ensureRootNamespace(t *testing.T) {
 	t.Helper()
 
