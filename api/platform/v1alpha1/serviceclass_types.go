@@ -92,6 +92,17 @@ type ServiceClassStatus struct {
 	// +optional
 	ObservedChartVersion string `json:"observedChartVersion,omitempty"`
 
+	// ServedGeneration is the spec generation the running controller for this
+	// kind was built from.
+	//
+	// Distinct from ObservedGeneration, which records the last generation
+	// looked at whether or not it ended up served — a failed reconcile
+	// advances that one. The controller holds a snapshot of the spec (its
+	// watches and its status paths both come from it), so this is what says
+	// whether that snapshot is still the current one.
+	// +optional
+	ServedGeneration int64 `json:"servedGeneration,omitempty"`
+
 	// +optional
 	// +listType=map
 	// +listMapKey=type

@@ -55,13 +55,10 @@ const (
 	ReasonSchemaInvalid       = "SchemaInvalid"
 	ReasonApplyFailed         = "ApplyFailed"
 	ReasonNotEstablished      = "NotEstablished"
+	ReasonNamesRejected       = "NamesRejected"
 	ReasonControllerFailed    = "ControllerFailed"
+	ReasonMarkFailed          = "OrphanMarkFailed"
 )
-
-// EstablishTimeout bounds the wait for the API server to accept a generated
-// CRD. Establishment is normally immediate; the bound is what keeps a wedged
-// API server from holding a reconcile open for the life of the process.
-const EstablishTimeout = 30 * time.Second
 
 // Source is the registry catalog charts are pulled from, and whether it speaks
 // plain HTTP.
@@ -216,10 +213,25 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 
 	// No controller for a kind the API server has not accepted: it would watch
 	// a resource that does not resolve and never sync its cache.
-	establish, cancel := context.WithTimeout(ctx, EstablishTimeout)
-	defer cancel()
-	if err := crd.WaitEstablished(establish, r.Client, desired.Name); err != nil {
-		return ctrl.Result{}, r.fail(ctx, &sc, ReasonNotEstablished, err)
+	var live apiextensionsv1.CustomResourceDefinition
+	if err := r.Get(ctx, client.ObjectKey{Name: desired.Name}, &live); client.IgnoreNotFound(err) != nil {
+		return ctrl.Result{}, r.fail(ctx, &sc, ReasonNotEstablished,
+			fmt.Errorf("read crd %s: %w", desired.Name, err))
+	}
+	established, err := crd.Established(&live)
+	if err != nil {
+		// Terminal: the plural belongs to another CRD, and no amount of waiting
+		// grants it. Reported and dropped rather than requeued forever.
+		return ctrl.Result{}, r.record(ctx, &sc, metav1.ConditionFalse, ReasonNamesRejected, err.Error())
+	}
+	if !established {
+		// Neither an error nor a requeue: a CRD that has just been applied and
+		// not yet accepted is early, not broken, and the watch on generated
+		// CRDs wakes this class the moment the API server flips Established.
+		// Returning an error instead would bill an ordinary wait to error
+		// metrics, and blocking here would hold a worker for the duration.
+		return ctrl.Result{}, r.record(ctx, &sc, metav1.ConditionFalse, ReasonNotEstablished,
+			"waiting for the API server to establish "+desired.Name)
 	}
 
 	if err := r.serve(ctx, &sc, gvk); err != nil {
@@ -227,10 +239,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	// The kind is served again, whatever it was before.
 	if err := r.markOrphaned(ctx, &sc, ""); err != nil {
-		return ctrl.Result{}, r.fail(ctx, &sc, ReasonApplyFailed, err)
+		return ctrl.Result{}, r.fail(ctx, &sc, ReasonMarkFailed, err)
 	}
 
 	sc.Status.ObservedChartVersion = sc.Spec.Chart.Version
+	sc.Status.ServedGeneration = sc.Generation
 	return ctrl.Result{}, r.record(ctx, &sc, metav1.ConditionTrue, ReasonEstablished,
 		fmt.Sprintf("serving %s from chart %s:%s", gvk.Kind, sc.Spec.Chart.Name, sc.Spec.Chart.Version))
 }
@@ -239,15 +252,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 // now.
 //
 // Start on its own is idempotent, and the controller it already started holds
-// the class it was built from — so a class whose chart version has moved would
-// serve the new schema while every tenant's release went on installing the old
-// version, with status claiming otherwise. Replacing the controller is what
-// carries the bump through to tenants.
+// the whole spec it was built from: the chart it installs, the watches it
+// registers and the status paths it copies all come from that snapshot. So any
+// spec change — a chart version bump, an edited statusFrom — leaves the new
+// CRD serving while the running controller does something else, and status
+// reports the new one. Replacing the controller is what carries the change
+// through to tenants.
 //
-// Both are attempted on that path: if the stop half fails there is no informer
-// state left worth preserving, and the joined error still fails the reconcile.
+// Generation rather than the chart version, and ServedGeneration rather than
+// ObservedGeneration: the latter advances on failed reconciles too, so a
+// change that failed once would look already served on the retry.
+//
+// Both halves are attempted on that path: if the stop fails there is no
+// informer state left worth preserving, and the joined error still fails the
+// reconcile.
 func (r *Reconciler) serve(ctx context.Context, sc *v1alpha1.ServiceClass, gvk schema.GroupVersionKind) error {
-	if sc.Status.ObservedChartVersion == sc.Spec.Chart.Version {
+	if sc.Status.ServedGeneration == sc.Generation {
 		return r.Engine.Start(ctx, gvk)
 	}
 	return errors.Join(r.Engine.Stop(ctx, gvk), r.Engine.Start(ctx, gvk))
@@ -283,7 +303,7 @@ func (r *Reconciler) finalize(ctx context.Context, sc *v1alpha1.ServiceClass, gv
 // The class's deletion timestamp rather than the current time, so a retried
 // finalize writes the same value instead of churning the object.
 func (r *Reconciler) markOrphaned(ctx context.Context, sc *v1alpha1.ServiceClass, since string) error {
-	name := sc.Spec.Plural + "." + Group
+	name := CRDNameFor(sc)
 	var existing apiextensionsv1.CustomResourceDefinition
 	if err := r.Get(ctx, client.ObjectKey{Name: name}, &existing); err != nil {
 		// A class deleted before it ever generated a CRD has nothing to mark,

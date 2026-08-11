@@ -77,7 +77,7 @@ func TestWaitEstablished_NamesRejectedIsTerminal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	err := WaitEstablished(ctx, c, "platforms.platform.paas.io")
+	err := waitEstablished(ctx, c, "platforms.platform.paas.io")
 	if err == nil {
 		t.Fatal("names rejected was treated as still converging")
 	}
@@ -104,8 +104,8 @@ func TestWaitEstablished_ReturnsWhenEstablished(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	if err := WaitEstablished(ctx, c, "platforms.platform.paas.io"); err != nil {
-		t.Errorf("WaitEstablished: %v", err)
+	if err := waitEstablished(ctx, c, "platforms.platform.paas.io"); err != nil {
+		t.Errorf("waitEstablished: %v", err)
 	}
 }
 
@@ -118,7 +118,7 @@ func TestWaitEstablished_MissingCRDExpires(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 
-	if err := WaitEstablished(ctx, c, "absent.platform.paas.io"); err == nil {
+	if err := waitEstablished(ctx, c, "absent.platform.paas.io"); err == nil {
 		t.Error("a CRD that never appeared was reported as Established")
 	}
 }
@@ -154,8 +154,8 @@ func TestWaitEstablished_SurvivesATransientGetError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 
-	if err := WaitEstablished(ctx, c, "platforms.platform.paas.io"); err != nil {
-		t.Errorf("WaitEstablished: %v — a transient error ended the wait", err)
+	if err := waitEstablished(ctx, c, "platforms.platform.paas.io"); err != nil {
+		t.Errorf("waitEstablished: %v — a transient error ended the wait", err)
 	}
 	if calls < 2 {
 		t.Errorf("Get called %d times, want the failure to have been retried", calls)

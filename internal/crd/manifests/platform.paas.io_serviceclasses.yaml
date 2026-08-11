@@ -216,6 +216,18 @@ spec:
                   reflects.
                 format: int64
                 type: integer
+              servedGeneration:
+                description: |-
+                  ServedGeneration is the spec generation the running controller for this
+                  kind was built from.
+
+                  Distinct from ObservedGeneration, which records the last generation
+                  looked at whether or not it ended up served — a failed reconcile
+                  advances that one. The controller holds a snapshot of the spec (its
+                  watches and its status paths both come from it), so this is what says
+                  whether that snapshot is still the current one.
+                format: int64
+                type: integer
             type: object
         type: object
     served: true

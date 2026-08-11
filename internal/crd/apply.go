@@ -53,36 +53,42 @@ func applyAll(ctx context.Context, c client.Client, crds []*apiextensionsv1.Cust
 	// Separately, and after every apply: waiting inline would serialise a slow
 	// establishment behind each other CRD's apply for no reason.
 	for _, crd := range crds {
-		if err := WaitEstablished(ctx, c, crd.Name); err != nil {
+		if err := waitEstablished(ctx, c, crd.Name); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// WaitEstablished blocks until the named CRD is Established, its names are
-// rejected, or ctx is done.
+// Established reports whether the API server has accepted a CRD.
 //
-// It polls rather than watches: its callers wait seconds for a handful of
-// CRDs, and a watch would cost a cache and an informer for each.
-func WaitEstablished(ctx context.Context, c client.Client, name string) error {
+// The error is terminal rather than "not yet": names already taken by another
+// CRD are never granted, so a caller that kept waiting would report a timeout
+// instead of the conflict that caused it. It is separate from the wait below
+// because a reconciler woken by a watch has the object already and must not
+// poll for it — see internal/controller/serviceclass.
+func Established(crd *apiextensionsv1.CustomResourceDefinition) (bool, error) {
+	for _, cond := range crd.Status.Conditions {
+		if cond.Type == apiextensionsv1.NamesAccepted && cond.Status == apiextensionsv1.ConditionFalse {
+			return false, fmt.Errorf("crd %s names rejected: %s", crd.Name, cond.Message)
+		}
+		if cond.Type == apiextensionsv1.Established && cond.Status == apiextensionsv1.ConditionTrue {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// waitEstablished polls rather than watches: this runs once at startup, before
+// any manager or cache exists, and a watch would cost both for a wait measured
+// in seconds.
+func waitEstablished(ctx context.Context, c client.Client, name string) error {
 	return wait.For(ctx, time.Second, "crd "+name+" Established", func(ctx context.Context) (bool, error) {
 		got := &apiextensionsv1.CustomResourceDefinition{}
 		if err := c.Get(ctx, types.NamespacedName{Name: name}, got); err != nil {
 			return false, nil
 		}
-		for _, cond := range got.Status.Conditions {
-			// Terminal: names already taken by another CRD are never granted,
-			// so waiting out the deadline would report a timeout instead of the
-			// conflict that caused it.
-			if cond.Type == apiextensionsv1.NamesAccepted && cond.Status == apiextensionsv1.ConditionFalse {
-				return false, fmt.Errorf("crd %s names rejected: %s", name, cond.Message)
-			}
-			if cond.Type == apiextensionsv1.Established && cond.Status == apiextensionsv1.ConditionTrue {
-				return true, nil
-			}
-		}
-		return false, nil
+		return Established(got)
 	})
 }
 

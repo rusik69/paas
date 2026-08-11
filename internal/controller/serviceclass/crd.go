@@ -29,6 +29,12 @@ func GVKFor(sc *v1alpha1.ServiceClass) schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: Group, Version: Version, Kind: sc.Spec.Kind}
 }
 
+// CRDNameFor is the name of the CustomResourceDefinition a ServiceClass
+// generates.
+func CRDNameFor(sc *v1alpha1.ServiceClass) string {
+	return sc.Spec.Plural + "." + Group
+}
+
 // CRDFor renders the CustomResourceDefinition for a ServiceClass.
 //
 // The chart's schema becomes .spec verbatim, which is what makes one
@@ -63,7 +69,7 @@ func CRDFor(sc *v1alpha1.ServiceClass, rawSchema []byte) (*apiextensionsv1.Custo
 			Kind:       "CustomResourceDefinition",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   sc.Spec.Plural + "." + Group,
+			Name:   CRDNameFor(sc),
 			Labels: map[string]string{ManagedByLabel: sc.Name},
 		},
 		Spec: apiextensionsv1.CustomResourceDefinitionSpec{

@@ -26,6 +26,7 @@ import (
 	"github.com/rusik69/paas/internal/controller/engine"
 	platformctl "github.com/rusik69/paas/internal/controller/platform"
 	"github.com/rusik69/paas/internal/controller/serviceclass"
+	"github.com/rusik69/paas/pkg/wait"
 )
 
 const testRegistry = "oci://registry.paas-system.svc.cluster.local:5000/paas/charts"
@@ -187,6 +188,29 @@ func readyCondition(t *testing.T, name string) *metav1.Condition {
 	return cond
 }
 
+// reconcileUntilReady drives the reconciler until the class reports Ready.
+//
+// The reconciler no longer blocks waiting for the API server to establish a
+// CRD — it records NotEstablished and returns, and in the operator the watch on
+// generated CRDs brings it back. These tests call Reconcile directly, with no
+// manager and so no watch, so they stand in for it. That the loop terminates is
+// itself the assertion that the reconcile is level-triggered.
+func reconcileUntilReady(t *testing.T, name string, r reconciler) {
+	t.Helper()
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: name}}
+	err := wait.For(t.Context(), 50*time.Millisecond, "serviceclass "+name+" Ready", func(ctx context.Context) (bool, error) {
+		if _, err := r.Reconcile(ctx, req); err != nil {
+			return false, err
+		}
+		cond := apimeta.FindStatusCondition(getServiceClass(t, name).Status.Conditions, serviceclass.ConditionReady)
+		return cond != nil && cond.Status == metav1.ConditionTrue, nil
+	})
+	if err != nil {
+		t.Fatalf("reconcile %s until ready: %v", name, err)
+	}
+}
+
 func getCRD(t *testing.T, plural string) *apiextensionsv1.CustomResourceDefinition {
 	t.Helper()
 
@@ -204,7 +228,7 @@ func TestServiceClass_EstablishesTheCRDAndStartsAController(t *testing.T) {
 	eng, _ := classEngine(t)
 	sc := newServiceClass(t, "widget", "Widget", "widgets")
 
-	reconcile(t, sc.Name, serviceClassReconciler(f, eng))
+	reconcileUntilReady(t, sc.Name, serviceClassReconciler(f, eng))
 
 	// The registry comes from the platform's own PackageSource rather than a
 	// constant of the serviceclass package, so the schema pull and the tenant
@@ -279,7 +303,7 @@ func TestServiceClass_FetchFailureLeavesAWorkingCRDStanding(t *testing.T) {
 	sc := newServiceClass(t, "sprocket", "Sprocket", "sprockets")
 	r := serviceClassReconciler(f, eng)
 
-	reconcile(t, sc.Name, r)
+	reconcileUntilReady(t, sc.Name, r)
 	getCRD(t, "sprockets")
 
 	f.err = errors.New("registry unreachable")
@@ -313,7 +337,7 @@ func TestServiceClass_DeletedServiceClassLeavesTheCRD(t *testing.T) {
 	sc := newServiceClass(t, "doodad", "Doodad", "doodads")
 	r := serviceClassReconciler(f, eng)
 
-	reconcile(t, sc.Name, r)
+	reconcileUntilReady(t, sc.Name, r)
 	if !eng.Running(gvkOf("Doodad")) {
 		t.Fatal("no controller is running before the deletion under test")
 	}
@@ -344,47 +368,182 @@ func TestServiceClass_DeletedServiceClassLeavesTheCRD(t *testing.T) {
 
 	// A later release puts the class back. The mark has to come off with it, or
 	// the query it exists for answers with kinds that are being served.
-	reconcile(t, newServiceClass(t, "doodad", "Doodad", "doodads").Name, r)
+	reconcileUntilReady(t, newServiceClass(t, "doodad", "Doodad", "doodads").Name, r)
 	if got := getCRD(t, "doodads").Annotations[serviceclass.OrphanedAnnotation]; got != "" {
 		t.Errorf("%s = %q on a kind that is served again", serviceclass.OrphanedAnnotation, got)
 	}
 }
 
-// A chart version bump has to reach tenants. The running controller holds the
-// class it was built from, so re-applying the CRD alone would serve the new
-// schema while every tenant's release went on installing the old chart — with
-// status reporting the new version.
-func TestServiceClass_ChartVersionBumpRestartsTheController(t *testing.T) {
+// Any change to the served spec has to reach tenants. The running controller
+// holds the whole spec it was built from — the chart it installs, the watches
+// it registers and the status paths it copies all come from that snapshot — so
+// re-applying the CRD alone would serve the new schema while the controller
+// went on doing something else, with status reporting the new one.
+//
+// statusFrom is here because it is the case a chart-version comparison misses:
+// the CRD gains a printer column that reads empty forever, and nothing says why.
+func TestServiceClass_SpecChangeRestartsTheController(t *testing.T) {
+	ensurePlatformSource(t)
+
+	for _, tc := range []struct {
+		name   string
+		class  string
+		kind   string
+		plural string
+		edit   func(*v1alpha1.ServiceClass)
+	}{
+		{"chart version", "flange", "Flange", "flanges", func(sc *v1alpha1.ServiceClass) {
+			sc.Spec.Chart.Version = "0.2.0"
+		}},
+		{"statusFrom", "grommet", "Grommet", "grommets", func(sc *v1alpha1.ServiceClass) {
+			sc.Spec.StatusFrom = []v1alpha1.StatusSource{{
+				Path:     ".status.primary",
+				From:     v1alpha1.ObjectRef{APIVersion: "postgresql.cnpg.io/v1", Kind: "Cluster"},
+				JSONPath: ".status.currentPrimary",
+			}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeSchema{raw: []byte(validSchema)}
+			eng, builds := classEngine(t)
+			sc := newServiceClass(t, tc.class, tc.kind, tc.plural)
+			r := serviceClassReconciler(f, eng)
+
+			reconcileUntilReady(t, sc.Name, r)
+			if got := builds(gvkOf(tc.kind)); got != 1 {
+				t.Fatalf("controllers built = %d, want 1", got)
+			}
+
+			// An unchanged class must not churn its controller.
+			reconcileUntilReady(t, sc.Name, r)
+			if got := builds(gvkOf(tc.kind)); got != 1 {
+				t.Errorf("controllers built = %d after reconciling an unchanged class, want 1", got)
+			}
+
+			live := getServiceClass(t, sc.Name)
+			tc.edit(live)
+			if err := k8sClient.Update(t.Context(), live); err != nil {
+				t.Fatalf("edit the class: %v", err)
+			}
+			reconcileUntilReady(t, sc.Name, r)
+
+			if got := builds(gvkOf(tc.kind)); got != 2 {
+				t.Errorf("controllers built = %d after the spec changed, want 2 — the running controller still holds the old spec", got)
+			}
+			after := getServiceClass(t, sc.Name)
+			if after.Status.ServedGeneration != after.Generation {
+				t.Errorf("servedGeneration = %d, generation = %d — status does not record what is actually running",
+					after.Status.ServedGeneration, after.Generation)
+			}
+		})
+	}
+}
+
+// The version the live schema was generated from stays answerable without
+// pulling anything, which is what the field is for.
+func TestServiceClass_RecordsTheChartVersionItServes(t *testing.T) {
 	ensurePlatformSource(t)
 
 	f := &fakeSchema{raw: []byte(validSchema)}
-	eng, builds := classEngine(t)
-	sc := newServiceClass(t, "flange", "Flange", "flanges")
+	eng, _ := classEngine(t)
+	sc := newServiceClass(t, "gudgeon", "Gudgeon", "gudgeons")
 	r := serviceClassReconciler(f, eng)
 
-	reconcile(t, sc.Name, r)
-	if got := builds(gvkOf("Flange")); got != 1 {
-		t.Fatalf("controllers built = %d, want 1", got)
-	}
-
-	// An unchanged class must not churn its controller.
-	reconcile(t, sc.Name, r)
-	if got := builds(gvkOf("Flange")); got != 1 {
-		t.Errorf("controllers built = %d after reconciling an unchanged class, want 1", got)
-	}
+	reconcileUntilReady(t, sc.Name, r)
 
 	live := getServiceClass(t, sc.Name)
 	live.Spec.Chart.Version = "0.2.0"
 	if err := k8sClient.Update(t.Context(), live); err != nil {
 		t.Fatalf("bump chart version: %v", err)
 	}
-	reconcile(t, sc.Name, r)
+	reconcileUntilReady(t, sc.Name, r)
 
-	if got := builds(gvkOf("Flange")); got != 2 {
-		t.Errorf("controllers built = %d after a chart version bump, want 2 — tenants keep getting 0.1.0", got)
-	}
 	if got := getServiceClass(t, sc.Name).Status.ObservedChartVersion; got != "0.2.0" {
 		t.Errorf("observedChartVersion = %q, want 0.2.0", got)
+	}
+}
+
+// The two claims the non-blocking establishment rests on, asserted against a
+// running manager with nothing calling Reconcile by hand.
+//
+// First, that a class reaches Ready on its own: the reconciler records
+// NotEstablished and returns rather than blocking a worker for up to thirty
+// seconds, so something has to bring it back.
+//
+// Second, that the watch on generated CRDs is what does it. The delete below
+// isolates that — the class's own spec and status are untouched, so its For()
+// watch has nothing to fire on, and if the CRD watch did not deliver, the CRD
+// would stay deleted and this would time out. It is also the self-healing the
+// watch was added for.
+func TestServiceClass_TheCRDWatchDrivesTheClass(t *testing.T) {
+	ensurePlatformSource(t)
+
+	mgr, err := manager.New(restCfg, ctrl.Options{
+		Scheme:  scheme,
+		Metrics: metricsserver.Options{BindAddress: "0"},
+	})
+	if err != nil {
+		t.Fatalf("build manager: %v", err)
+	}
+	if err := (&serviceclass.Reconciler{
+		Client:  mgr.GetClient(),
+		Fetcher: &fakeSchema{raw: []byte(validSchema)},
+		Engine: &engine.Engine{
+			Manager: mgr,
+			Build:   func(context.Context, schema.GroupVersionKind, func()) error { return nil },
+		},
+	}).SetupWithManager(mgr); err != nil {
+		t.Fatalf("register serviceclass reconciler: %v", err)
+	}
+
+	mgrCtx, cancelMgr := context.WithCancel(t.Context())
+	go func() { _ = mgr.Start(mgrCtx) }()
+	if !mgr.GetCache().WaitForCacheSync(mgrCtx) {
+		t.Fatal("cache did not sync")
+	}
+
+	sc := newServiceClass(t, "cotter", "Cotter", "cotters")
+	// Registered after the class, so it runs before the class's own cleanup:
+	// otherwise the controller re-applies the CRD the cleanup has just deleted.
+	t.Cleanup(cancelMgr)
+
+	// Bounded, so a watch that never delivers fails here rather than as a
+	// suite-wide timeout with nothing pointing at the cause.
+	waitCtx, cancelWait := context.WithTimeout(t.Context(), 30*time.Second)
+	t.Cleanup(cancelWait)
+
+	waitReady := func(what string) {
+		t.Helper()
+		err := wait.For(waitCtx, 50*time.Millisecond, what, func(ctx context.Context) (bool, error) {
+			var live v1alpha1.ServiceClass
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: sc.Name}, &live); err != nil {
+				return false, err
+			}
+			return apimeta.IsStatusConditionTrue(live.Status.Conditions, serviceclass.ConditionReady), nil
+		})
+		if err != nil {
+			t.Fatalf("wait for %s: %v", what, err)
+		}
+	}
+	waitReady("cotter Ready without anything calling Reconcile")
+
+	crd := getCRD(t, "cotters")
+	if err := k8sClient.Delete(t.Context(), crd); err != nil {
+		t.Fatalf("delete the generated crd: %v", err)
+	}
+	// A fresh UID, not merely a successful Get: deletion is not instant — the
+	// API server holds the CRD under customresourcecleanup for a moment — so
+	// "it is there" is true before anything has happened at all.
+	err = wait.For(waitCtx, 50*time.Millisecond, "cotters CRD to be put back", func(ctx context.Context) (bool, error) {
+		var back apiextensionsv1.CustomResourceDefinition
+		err := k8sClient.Get(ctx, types.NamespacedName{Name: crd.Name}, &back)
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return err == nil && back.UID != crd.UID, err
+	})
+	if err != nil {
+		t.Fatalf("the CRD watch did not wake the class: %v", err)
 	}
 }
 

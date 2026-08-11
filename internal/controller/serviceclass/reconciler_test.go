@@ -216,9 +216,38 @@ func TestReconcile_CRDApplyFailureIsReported(t *testing.T) {
 	}
 }
 
-// A CRD whose names the API server refuses never becomes Established, and
-// WaitEstablished treats that as terminal rather than waiting out the bound.
-func TestReconcile_UnestablishedCRDIsReported(t *testing.T) {
+// A CRD the API server has not accepted yet is early, not broken: no error, no
+// requeue — the watch on generated CRDs brings the class back — and above all
+// no controller for a kind that is not being served.
+func TestReconcile_UnestablishedCRDStartsNoController(t *testing.T) {
+	t.Parallel()
+
+	// Not seeded at all, which is what a just-applied CRD looks like through a
+	// cache that has not caught up yet.
+	c := builder(t, testClass(), testSource()).WithInterceptorFuncs(interceptor.Funcs{
+		Patch: applyIsANoOp,
+	}).Build()
+	r := testReconciler(t, c, stubFetcher{raw: []byte(validSchema)})
+
+	if _, err := r.Reconcile(t.Context(), request()); err != nil {
+		t.Fatalf("Reconcile returned %v, want nil — waiting is not a fault", err)
+	}
+	if r.Engine.Running(GVKFor(testClass())) {
+		t.Error("a controller was started for a kind the API server has not established")
+	}
+
+	cond := readyOf(t, c, "postgres")
+	if cond.Status != metav1.ConditionFalse || cond.Reason != ReasonNotEstablished {
+		t.Errorf("Ready = %s/%s, want False/%s", cond.Status, cond.Reason, ReasonNotEstablished)
+	}
+	if !strings.Contains(cond.Message, "postgreses."+Group) {
+		t.Errorf("message = %q, want it to name the CRD being waited on", cond.Message)
+	}
+}
+
+// Names already taken by another CRD are never granted, so this one is
+// terminal: reported, and not retried until something changes.
+func TestReconcile_RejectedNamesAreTerminal(t *testing.T) {
 	t.Parallel()
 
 	rejected := &apiextensionsv1.CustomResourceDefinition{
@@ -235,10 +264,41 @@ func TestReconcile_UnestablishedCRDIsReported(t *testing.T) {
 	c := builder(t, testClass(), testSource(), rejected).WithInterceptorFuncs(interceptor.Funcs{
 		Patch: applyIsANoOp,
 	}).Build()
+	r := testReconciler(t, c, stubFetcher{raw: []byte(validSchema)})
+
+	if _, err := r.Reconcile(t.Context(), request()); err != nil {
+		t.Fatalf("Reconcile returned %v, want nil — retrying cannot free the name", err)
+	}
+	if r.Engine.Running(GVKFor(testClass())) {
+		t.Error("a controller was started for a kind whose names were refused")
+	}
+
+	cond := readyOf(t, c, "postgres")
+	if cond.Status != metav1.ConditionFalse || cond.Reason != ReasonNamesRejected {
+		t.Errorf("Ready = %s/%s, want False/%s", cond.Status, cond.Reason, ReasonNamesRejected)
+	}
+	if !strings.Contains(cond.Message, "another CRD already serves postgreses") {
+		t.Errorf("message = %q, want the API server's own conflict message", cond.Message)
+	}
+}
+
+func TestReconcile_CRDReadFailureIsReported(t *testing.T) {
+	t.Parallel()
+
+	boom := errors.New("etcd is unavailable")
+	c := builder(t, testClass(), testSource()).WithInterceptorFuncs(interceptor.Funcs{
+		Patch: applyIsANoOp,
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*apiextensionsv1.CustomResourceDefinition); ok {
+				return boom
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	}).Build()
 
 	_, err := testReconciler(t, c, stubFetcher{raw: []byte(validSchema)}).Reconcile(t.Context(), request())
-	if err == nil {
-		t.Fatal("a CRD the API server never accepted was reported as ready")
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want it to wrap the read failure", err)
 	}
 	if cond := readyOf(t, c, "postgres"); cond.Reason != ReasonNotEstablished {
 		t.Errorf("reason = %q, want %q", cond.Reason, ReasonNotEstablished)
@@ -429,8 +489,8 @@ func TestReconcile_ClearingTheOrphanMarkIsReported(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the failure to clear the mark", err)
 	}
-	if cond := readyOf(t, c, "postgres"); cond.Reason != ReasonApplyFailed {
-		t.Errorf("reason = %q, want %q", cond.Reason, ReasonApplyFailed)
+	if cond := readyOf(t, c, "postgres"); cond.Reason != ReasonMarkFailed {
+		t.Errorf("reason = %q, want %q — ApplyFailed would read as the CRD apply", cond.Reason, ReasonMarkFailed)
 	}
 }
 
