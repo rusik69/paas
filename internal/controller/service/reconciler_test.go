@@ -5,9 +5,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	helmv2 "github.com/fluxcd/helm-controller/api/v2"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -30,6 +32,7 @@ func testReconciler() *Reconciler {
 	return &Reconciler{
 		GVK:      postgresGVK,
 		Registry: "oci://registry.paas-system.svc.cluster.local:5000/paas/charts",
+		Insecure: true,
 		Class: &v1alpha1.ServiceClass{
 			ObjectMeta: metav1.ObjectMeta{Name: "postgres"},
 			Spec: v1alpha1.ServiceClassSpec{
@@ -167,8 +170,26 @@ func TestDesired_ReferencesTheSharedRepository(t *testing.T) {
 	if spec.Chart != "postgres" || spec.Version != "0.1.0" {
 		t.Errorf("chart = %q@%q, want postgres@0.1.0", spec.Chart, spec.Version)
 	}
-	if spec.SourceRef.Kind != sourcev1.HelmRepositoryKind || spec.SourceRef.Name != SourceName {
-		t.Errorf("sourceRef = %+v, want the shared repository %s", spec.SourceRef, SourceName)
+	// Same namespace as the release, not flux-system: a cross-namespace
+	// SourceRef makes source-controller name the derived HelmChart
+	// "<namespace>-<name>" in the source's namespace, and two tenants can pick
+	// a pair that collides there — same-namespace avoids that by construction.
+	if spec.SourceRef.Kind != sourcev1.HelmRepositoryKind || spec.SourceRef.Name != SourceName ||
+		spec.SourceRef.Namespace != "tenant-acme" {
+		t.Errorf("sourceRef = %+v, want the repository in the CR's own namespace", spec.SourceRef)
+	}
+}
+
+func TestDesired_RetriesAFailedInstallAndUpgrade(t *testing.T) {
+	hr, err := testReconciler().desired(testCR())
+	if err != nil {
+		t.Fatalf("desired: %v", err)
+	}
+	if hr.Spec.Install == nil || hr.Spec.Install.Remediation == nil || hr.Spec.Install.Remediation.Retries == 0 {
+		t.Error("install has no retries; a release that failed once would stay failed — helm-controller's default remediation is none")
+	}
+	if hr.Spec.Upgrade == nil || hr.Spec.Upgrade.Remediation == nil || hr.Spec.Upgrade.Remediation.Retries == 0 {
+		t.Error("upgrade has no retries")
 	}
 }
 
@@ -186,15 +207,33 @@ func TestDesired_RejectsASpecThatIsNotAMap(t *testing.T) {
 }
 
 func TestDesiredSource_PointsAtTheConfiguredRegistry(t *testing.T) {
-	repo := testReconciler().desiredSource()
+	repo := testReconciler().desiredSource("tenant-acme")
 	if repo.Name != SourceName {
 		t.Errorf("name = %q, want %q", repo.Name, SourceName)
+	}
+	// In the tenant's own namespace, not a cluster-shared one: see the
+	// SourceName doc comment for why a cross-namespace ref is unsafe here.
+	if repo.Namespace != "tenant-acme" {
+		t.Errorf("namespace = %q, want tenant-acme", repo.Namespace)
 	}
 	if repo.Spec.URL != "oci://registry.paas-system.svc.cluster.local:5000/paas/charts" {
 		t.Errorf("url = %q, want the reconciler's registry", repo.Spec.URL)
 	}
 	if repo.Spec.Type != sourcev1.HelmRepositoryTypeOCI {
 		t.Errorf("type = %q, want oci", repo.Spec.Type)
+	}
+}
+
+// The regression this guards: the in-cluster registry speaks plain HTTP (see
+// platform.Reconciler.applySource), and source-controller defaults to TLS. A
+// HelmRepository that leaves Insecure false would fail to pull any chart.
+func TestDesiredSource_CarriesInsecureThrough(t *testing.T) {
+	for _, insecure := range []bool{true, false} {
+		r := testReconciler()
+		r.Insecure = insecure
+		if got := r.desiredSource("tenant-acme").Spec.Insecure; got != insecure {
+			t.Errorf("Insecure = %t, want %t", got, insecure)
+		}
 	}
 }
 
@@ -309,8 +348,11 @@ func TestReconcile_RendersTheRepositoryAndReleaseAndSyncsStatus(t *testing.T) {
 	}
 
 	var repo sourcev1.HelmRepository
-	if err := c.Get(t.Context(), types.NamespacedName{Namespace: "flux-system", Name: SourceName}, &repo); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: "tenant-acme", Name: SourceName}, &repo); err != nil {
 		t.Fatalf("get helmrepository: %v", err)
+	}
+	if !repo.Spec.Insecure {
+		t.Error("insecure = false, want true — the test reconciler's registry speaks plain HTTP")
 	}
 
 	var hr helmv2.HelmRelease
@@ -333,6 +375,66 @@ func TestFieldPath(t *testing.T) {
 	got := fieldPath(".status.primary")
 	if len(got) != 2 || got[0] != "status" || got[1] != "primary" {
 		t.Errorf("fieldPath = %v, want [status primary]", got)
+	}
+}
+
+func TestConditionsFrom_RejectsANonSliceConditions(t *testing.T) {
+	cr := testCR()
+	cr.Object["status"] = map[string]any{"conditions": "not-a-list"}
+
+	if _, err := conditionsFrom(cr); err == nil {
+		t.Fatal("a non-slice status.conditions was accepted")
+	}
+}
+
+func TestConditionsFrom_RejectsAMalformedCondition(t *testing.T) {
+	cr := testCR()
+	cr.Object["status"] = map[string]any{"conditions": []any{
+		map[string]any{"type": "Ready", "status": "True", "reason": "X", "observedGeneration": "not-a-number"},
+	}}
+
+	if _, err := conditionsFrom(cr); err == nil {
+		t.Fatal("a condition with a wrong-typed field was accepted")
+	}
+}
+
+func TestConditionsFrom_SkipsANonMapItem(t *testing.T) {
+	cr := testCR()
+	cr.Object["status"] = map[string]any{"conditions": []any{"not-a-condition"}}
+
+	got, err := conditionsFrom(cr)
+	if err != nil {
+		t.Fatalf("conditionsFrom: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("conditions = %v, want the non-map item skipped rather than kept", got)
+	}
+}
+
+func TestConditionsFrom_AbsentConditionsIsNotAnError(t *testing.T) {
+	got, err := conditionsFrom(testCR())
+	if err != nil {
+		t.Fatalf("conditionsFrom: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("conditions = %v, want none — the CR has no status yet", got)
+	}
+}
+
+func TestSyncStatus_WrapsAMalformedExistingConditions(t *testing.T) {
+	cr := testCR()
+	cr.Object["status"] = map[string]any{"conditions": "not-a-list"}
+	live := helmReleaseWithCondition("db", "tenant-acme")
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cr, live).Build()
+	r := testReconciler()
+	r.Client = c
+
+	err := r.syncStatus(t.Context(), cr, live)
+	if err == nil {
+		t.Fatal("a CR with malformed existing conditions was accepted")
+	}
+	if !strings.Contains(err.Error(), "read conditions") {
+		t.Errorf("err = %q, want it to name the read", err)
 	}
 }
 
@@ -428,6 +530,100 @@ func TestSyncStatus_CopiesTheReadyCondition(t *testing.T) {
 	cond := conds[0].(map[string]any)
 	if cond["status"] != string(metav1.ConditionTrue) || cond["reason"] != "InstallSucceeded" || cond["message"] != "release ready" {
 		t.Errorf("condition = %+v, want the release's own Ready condition mirrored", cond)
+	}
+}
+
+// seedReadyCondition puts an existing Ready condition on cr with a fixed,
+// deliberately-old timestamp, so a test can tell "preserved" from "just
+// stamped now" without depending on two real clock reads landing in
+// different seconds.
+func seedReadyCondition(cr *unstructured.Unstructured, status, reason string, old time.Time) {
+	_ = unstructured.SetNestedSlice(cr.Object, []any{map[string]any{
+		"type":               "Ready",
+		"status":             status,
+		"reason":             reason,
+		"message":            "",
+		"lastTransitionTime": metav1.NewTime(old).UTC().Format(time.RFC3339),
+		"observedGeneration": int64(0),
+	}}, "status", "conditions")
+}
+
+// The regression this guards: stamping lastTransitionTime on every reconcile
+// records the last reconcile rather than the last transition, and churns
+// resourceVersion, which re-triggers this reconciler's own watch.
+func TestSyncStatus_PreservesLastTransitionTimeWhenStatusIsUnchanged(t *testing.T) {
+	cr := testCR()
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedReadyCondition(cr, string(metav1.ConditionTrue), "InstallSucceeded", old)
+
+	live := helmReleaseWithCondition("db", "tenant-acme", metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "InstallSucceeded", Message: "release ready",
+	})
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cr, live).Build()
+	r := testReconciler()
+	r.Client = c
+
+	if err := r.syncStatus(t.Context(), cr, live); err != nil {
+		t.Fatalf("syncStatus: %v", err)
+	}
+
+	want := metav1.NewTime(old).UTC().Format(time.RFC3339)
+	if got := readyCondition(t, c)["lastTransitionTime"]; got != want {
+		t.Errorf("lastTransitionTime = %v, want the preserved %v — the status did not change", got, want)
+	}
+}
+
+func TestSyncStatus_MovesLastTransitionTimeOnATransition(t *testing.T) {
+	cr := testCR()
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedReadyCondition(cr, string(metav1.ConditionUnknown), "Pending", old)
+
+	live := helmReleaseWithCondition("db", "tenant-acme", metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "InstallSucceeded",
+	})
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cr, live).Build()
+	r := testReconciler()
+	r.Client = c
+
+	if err := r.syncStatus(t.Context(), cr, live); err != nil {
+		t.Fatalf("syncStatus: %v", err)
+	}
+
+	stale := metav1.NewTime(old).UTC().Format(time.RFC3339)
+	if got := readyCondition(t, c)["lastTransitionTime"]; got == stale {
+		t.Error("lastTransitionTime did not move when status transitioned from Unknown to True")
+	}
+}
+
+func readyCondition(t *testing.T, c client.Client) map[string]any {
+	t.Helper()
+
+	var got unstructured.Unstructured
+	got.SetGroupVersionKind(postgresGVK)
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: "tenant-acme", Name: "db"}, &got); err != nil {
+		t.Fatalf("get postgres: %v", err)
+	}
+	conds, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+	if len(conds) != 1 {
+		t.Fatalf("status.conditions = %v, want one", conds)
+	}
+	return conds[0].(map[string]any)
+}
+
+func TestSyncStatus_IgnoresANotFoundPatch(t *testing.T) {
+	cr := testCR()
+	live := helmReleaseWithCondition("db", "tenant-acme")
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cr, live).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(context.Context, client.Client, string, client.Object, client.Patch, ...client.SubResourcePatchOption) error {
+				return apierrors.NewNotFound(schema.GroupResource{Group: "apps.paas.io", Resource: "postgreses"}, "db")
+			},
+		}).Build()
+	r := testReconciler()
+	r.Client = c
+
+	if err := r.syncStatus(t.Context(), cr, live); err != nil {
+		t.Errorf("syncStatus: %v, want nil — the CR raced deletion, which is not this reconciler's failure to report", err)
 	}
 }
 

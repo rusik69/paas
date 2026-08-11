@@ -22,11 +22,11 @@ import (
 	"k8s.io/client-go/util/jsonpath"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/rusik69/paas/api/platform/v1alpha1"
-	"github.com/rusik69/paas/internal/flux"
 )
 
 // FieldManager is this reconciler's alone. The platform reconcilers write
@@ -44,42 +44,90 @@ const (
 // ReleaseInterval matches the platform reconciler's.
 const ReleaseInterval = 10 * time.Minute
 
+// InstallRetries matches the platform reconciler's: helm-controller's default
+// remediation is none, so a release whose first install fails once — a
+// dependency's admission webhook not serving yet, say — would otherwise stay
+// failed forever with nothing retrying it.
+const InstallRetries = 3
+
 // SourceName is the HelmRepository every generated kind's chart resolves
-// against. One repository serves the whole service catalog regardless of how
-// many kinds are running, so every Reconciler instance applies the same
-// object rather than each kind owning its own.
+// against. It is created once per tenant namespace rather than once per
+// cluster: a cross-namespace SourceRef makes source-controller name the
+// derived HelmChart "<namespace>-<name>" in the *source's* namespace, and two
+// tenants can pick a namespace/name pair that collides there, letting one
+// tenant's release resolve another tenant's chart. Same-namespace avoids that
+// by construction, is reclaimed with the namespace, and matches Flux's own
+// multi-tenancy guidance.
 const SourceName = "service-charts"
 
 // Reconciler renders one generated kind. One instance runs per kind.
 type Reconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	GVK      schema.GroupVersionKind
-	Class    *v1alpha1.ServiceClass
+	Scheme *runtime.Scheme
+	GVK    schema.GroupVersionKind
+	Class  *v1alpha1.ServiceClass
+	// Registry is the OCI URL every chart in the catalog is pulled from.
 	Registry string
+	// Insecure must mirror whatever the platform's own registry access uses —
+	// see Platform.Spec.Registry and platform.Reconciler.applySource, which
+	// sets it from the same in-cluster-registry-speaks-plain-HTTP fact. There
+	// is deliberately no default here: whoever builds a Reconciler (the
+	// engine's Builder) must set it explicitly from that one source of truth,
+	// so a future TLS registry has an obvious place to turn it off.
+	Insecure bool
 }
 
 // SetupWithManager registers a controller for this kind on an already-running
 // manager, which is why it takes a context: the engine owns its lifetime.
+//
+// This does not use ctrl.NewControllerManagedBy(mgr).Complete(r): Complete
+// adds the controller to the manager, which runs it on the manager's own
+// context rather than ctx. The engine's per-kind cancel would then do
+// nothing — the controller keeps running while Stop removes its informer out
+// from under it. Building it unmanaged and starting it on ctx directly makes
+// the controller's lifetime actually the one the engine owns.
 func (r *Reconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
 	ctrl.LoggerFrom(ctx).Info("registering service controller", "kind", r.GVK.Kind)
 
+	// The engine builds and tears down one controller per kind as
+	// ServiceClasses come and go, so the same name is legitimately reused
+	// across a Stop and a later Start. controller-runtime's uniqueness check
+	// exists for controllers wired once at manager startup, which these are
+	// not, and without this a second Start for the same kind fails forever
+	// with "already exists".
+	skipNameValidation := true
+	c, err := controller.NewUnmanaged("service-"+r.Class.Name, controller.Options{
+		Reconciler:         r,
+		SkipNameValidation: &skipNameValidation,
+	})
+	if err != nil {
+		return fmt.Errorf("build controller for %s: %w", r.Class.Name, err)
+	}
+
 	cr := &unstructured.Unstructured{}
 	cr.SetGroupVersionKind(r.GVK)
-
-	b := ctrl.NewControllerManagedBy(mgr).
-		Named("service-" + r.Class.Name).
-		For(cr).
-		Owns(&helmv2.HelmRelease{})
-
+	if err := c.Watch(source.Kind(mgr.GetCache(), client.Object(cr), &handler.EnqueueRequestForObject{})); err != nil {
+		return fmt.Errorf("watch %s: %w", r.GVK.Kind, err)
+	}
+	if err := c.Watch(source.Kind(mgr.GetCache(), client.Object(&helmv2.HelmRelease{}),
+		handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(), cr, handler.OnlyControllerOwner()))); err != nil {
+		return fmt.Errorf("watch helmrelease: %w", err)
+	}
 	for _, s := range r.Class.Spec.StatusFrom {
 		src := &unstructured.Unstructured{}
 		src.SetAPIVersion(s.From.APIVersion)
 		src.SetKind(s.From.Kind)
-		b = b.WatchesRawSource(source.Kind(mgr.GetCache(), client.Object(src),
-			handler.EnqueueRequestsFromMapFunc(byServiceLabels)))
+		if err := c.Watch(source.Kind(mgr.GetCache(), client.Object(src), handler.EnqueueRequestsFromMapFunc(byServiceLabels))); err != nil {
+			return fmt.Errorf("watch %s: %w", s.From.Kind, err)
+		}
 	}
-	return b.Complete(r)
+
+	go func() {
+		if err := c.Start(ctx); err != nil {
+			ctrl.LoggerFrom(ctx).Error(err, "service controller stopped", "kind", r.GVK.Kind)
+		}
+	}()
+	return nil
 }
 
 // byServiceLabels maps an underlying object back to the CR whose status it
@@ -101,9 +149,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if err := r.Patch(ctx, r.desiredSource(), client.Apply,
+	if err := r.Patch(ctx, r.desiredSource(cr.GetNamespace()), client.Apply,
 		client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
-		return ctrl.Result{}, fmt.Errorf("apply helmrepository %s: %w", SourceName, err)
+		return ctrl.Result{}, fmt.Errorf("apply helmrepository %s/%s: %w", cr.GetNamespace(), SourceName, err)
 	}
 
 	hr, err := r.desired(cr)
@@ -118,20 +166,22 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	return ctrl.Result{}, r.syncStatus(ctx, cr, hr)
 }
 
-// desiredSource is the HelmRepository backing every generated kind's chart.
-// It has no single owner — many kinds' HelmReleases resolve against it — so
-// it is applied here rather than tied to one CR's lifecycle.
-func (r *Reconciler) desiredSource() *sourcev1.HelmRepository {
+// desiredSource is the HelmRepository backing every generated kind's chart in
+// one tenant namespace. It has no owner reference: several kinds' releases in
+// the same namespace resolve against it, so no single CR's lifecycle should
+// delete it — the namespace going away reclaims it instead.
+func (r *Reconciler) desiredSource(namespace string) *sourcev1.HelmRepository {
 	return &sourcev1.HelmRepository{
 		TypeMeta: metav1.TypeMeta{APIVersion: sourcev1.GroupVersion.String(), Kind: sourcev1.HelmRepositoryKind},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      SourceName,
-			Namespace: flux.Namespace,
+			Namespace: namespace,
 		},
 		Spec: sourcev1.HelmRepositorySpec{
 			Type:     sourcev1.HelmRepositoryTypeOCI,
 			URL:      r.Registry,
 			Interval: metav1.Duration{Duration: ReleaseInterval},
+			Insecure: r.Insecure,
 		},
 	}
 }
@@ -144,9 +194,10 @@ func (r *Reconciler) desired(cr *unstructured.Unstructured) (*helmv2.HelmRelease
 	if !found {
 		values = map[string]any{}
 	}
-	// json.Marshal cannot fail here: values came out of unstructured.NestedMap,
-	// whose own deep copy already panics on anything that is not JSON-safe, so
-	// nothing reaches this point that Marshal would reject.
+	// json.Marshal cannot fail here: everything in cr.Object was itself
+	// produced by decoding JSON (from the API server, or from a test literal
+	// built the same shapes), and JSON's grammar has no NaN or Inf — the only
+	// values a plain map like this could contain that Marshal would reject.
 	raw, _ := json.Marshal(values)
 
 	yes := true
@@ -176,9 +227,16 @@ func (r *Reconciler) desired(cr *unstructured.Unstructured) (*helmv2.HelmRelease
 					SourceRef: helmv2.CrossNamespaceObjectReference{
 						Kind:      sourcev1.HelmRepositoryKind,
 						Name:      SourceName,
-						Namespace: flux.Namespace,
+						Namespace: cr.GetNamespace(),
 					},
 				},
+			},
+			// Retried, not terminal — see InstallRetries.
+			Install: &helmv2.Install{
+				Remediation: &helmv2.InstallRemediation{Retries: InstallRetries},
+			},
+			Upgrade: &helmv2.Upgrade{
+				Remediation: &helmv2.UpgradeRemediation{Retries: InstallRetries},
 			},
 			Values: &apiextensionsv1.JSON{Raw: raw},
 		},
@@ -205,17 +263,34 @@ func (r *Reconciler) syncStatus(ctx context.Context, cr *unstructured.Unstructur
 		reason = "Pending"
 	}
 
+	conditions, err := conditionsFrom(cr)
+	if err != nil {
+		return fmt.Errorf("read conditions of %s/%s: %w", cr.GetNamespace(), cr.GetName(), err)
+	}
+	// SetStatusCondition only moves LastTransitionTime when Status actually
+	// changes. Stamping it on every reconcile — what the brief's own syncStatus
+	// did — records the last reconcile rather than the last transition, and
+	// churns resourceVersion, which re-triggers this reconciler's own For()
+	// watch on every pass.
+	meta.SetStatusCondition(&conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             ready,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: cr.GetGeneration(),
+	})
+
 	patch := cr.DeepCopy()
 	_ = unstructured.SetNestedField(patch.Object, cr.GetGeneration(), "status", "observedGeneration")
-	conds := []any{map[string]any{
-		"type":               "Ready",
-		"status":             string(ready),
-		"reason":             reason,
-		"message":            message,
-		"lastTransitionTime": metav1.Now().UTC().Format(time.RFC3339),
-		"observedGeneration": cr.GetGeneration(),
-	}}
-	_ = unstructured.SetNestedSlice(patch.Object, conds, "status", "conditions")
+	// ToUnstructured cannot fail on a metav1.Condition: every field is a
+	// string, an int64 or a Time, none of which the converter's JSON-based
+	// round trip rejects.
+	condsOut := make([]any, 0, len(conditions))
+	for _, c := range conditions {
+		m, _ := runtime.DefaultUnstructuredConverter.ToUnstructured(&c)
+		condsOut = append(condsOut, m)
+	}
+	_ = unstructured.SetNestedSlice(patch.Object, condsOut, "status", "conditions")
 
 	for _, s := range r.Class.Spec.StatusFrom {
 		v, err := r.readStatusFrom(ctx, cr, s)
@@ -230,7 +305,36 @@ func (r *Reconciler) syncStatus(ctx context.Context, cr *unstructured.Unstructur
 		_ = unstructured.SetNestedField(patch.Object, v, fieldPath(s.Path)...)
 	}
 
-	return r.Status().Patch(ctx, patch, client.MergeFrom(cr))
+	// The CR can be gone by the time this lands — reconcile is level-triggered
+	// and races deletion constantly — and that is not a failure to report.
+	return client.IgnoreNotFound(r.Status().Patch(ctx, patch, client.MergeFrom(cr)))
+}
+
+// conditionsFrom reads the CR's existing status.conditions back into typed
+// form, so meta.SetStatusCondition can compare against them and decide
+// whether a transition actually happened.
+func conditionsFrom(cr *unstructured.Unstructured) ([]metav1.Condition, error) {
+	raw, found, err := unstructured.NestedSlice(cr.Object, "status", "conditions")
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+
+	conditions := make([]metav1.Condition, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		var c metav1.Condition
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(m, &c); err != nil {
+			return nil, err
+		}
+		conditions = append(conditions, c)
+	}
+	return conditions, nil
 }
 
 // fieldPath turns ".status.primary" into the segments SetNestedField wants.

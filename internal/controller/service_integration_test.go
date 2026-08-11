@@ -24,7 +24,6 @@ import (
 	"github.com/rusik69/paas/api/platform/v1alpha1"
 	"github.com/rusik69/paas/internal/controller/service"
 	"github.com/rusik69/paas/internal/controller/serviceclass"
-	"github.com/rusik69/paas/internal/flux"
 	"github.com/rusik69/paas/pkg/wait"
 )
 
@@ -91,6 +90,10 @@ func serviceReconciler(t *testing.T, class *v1alpha1.ServiceClass) *service.Reco
 		GVK:      postgresGVK,
 		Class:    class,
 		Registry: "oci://registry.paas-system.svc.cluster.local:5000/paas/charts",
+		// The in-cluster registry speaks plain HTTP — see
+		// platform.Reconciler.applySource for the same fact on the platform's
+		// own registry access.
+		Insecure: true,
 	}
 }
 
@@ -119,13 +122,18 @@ func TestService_RendersARepositoryAndReleaseAgainstARealAPIServer(t *testing.T)
 	cr := newPostgres(t, "tenant-service", "db")
 	reconcileIn(t, "tenant-service", "db", serviceReconciler(t, postgresClass()))
 
+	// In the tenant's own namespace, not flux-system: a cross-namespace
+	// SourceRef would let source-controller collide two tenants' HelmCharts.
 	var repo sourcev1.HelmRepository
-	repoKey := types.NamespacedName{Namespace: flux.Namespace, Name: service.SourceName}
+	repoKey := types.NamespacedName{Namespace: "tenant-service", Name: service.SourceName}
 	if err := k8sClient.Get(t.Context(), repoKey, &repo); err != nil {
 		t.Fatalf("get helmrepository: %v", err)
 	}
 	if repo.Spec.URL != "oci://registry.paas-system.svc.cluster.local:5000/paas/charts" {
 		t.Errorf("repository url = %q, want the reconciler's registry", repo.Spec.URL)
+	}
+	if !repo.Spec.Insecure {
+		t.Error("insecure = false, want true — the in-cluster registry speaks plain HTTP")
 	}
 
 	var hr helmv2.HelmRelease
@@ -136,11 +144,17 @@ func TestService_RendersARepositoryAndReleaseAgainstARealAPIServer(t *testing.T)
 	if hr.Spec.Chart == nil || hr.Spec.Chart.Spec.Chart != "postgres" || hr.Spec.Chart.Spec.Version != "0.1.0" {
 		t.Errorf("chart = %+v, want postgres@0.1.0", hr.Spec.Chart)
 	}
-	if hr.Spec.Chart.Spec.SourceRef.Name != service.SourceName || hr.Spec.Chart.Spec.SourceRef.Namespace != flux.Namespace {
-		t.Errorf("sourceRef = %+v, want the shared repository in %s", hr.Spec.Chart.Spec.SourceRef, flux.Namespace)
+	if hr.Spec.Chart.Spec.SourceRef.Name != service.SourceName || hr.Spec.Chart.Spec.SourceRef.Namespace != "tenant-service" {
+		t.Errorf("sourceRef = %+v, want the repository in the tenant's own namespace", hr.Spec.Chart.Spec.SourceRef)
 	}
 	if len(hr.OwnerReferences) != 1 || hr.OwnerReferences[0].Name != "db" {
 		t.Errorf("ownerReferences = %+v, want one naming the Postgres", hr.OwnerReferences)
+	}
+	if hr.Spec.Install == nil || hr.Spec.Install.Remediation == nil || hr.Spec.Install.Remediation.Retries == 0 {
+		t.Error("install has no retries; a release that failed once would stay failed")
+	}
+	if hr.Spec.Upgrade == nil || hr.Spec.Upgrade.Remediation == nil || hr.Spec.Upgrade.Remediation.Retries == 0 {
+		t.Error("upgrade has no retries")
 	}
 
 	var got unstructured.Unstructured
@@ -282,5 +296,73 @@ func TestServiceSetupWithManager_RegistersWithNoStatusFrom(t *testing.T) {
 	if err := serviceReconciler(t, class).SetupWithManager(t.Context(), mgr); err != nil {
 		t.Errorf("register service reconciler: %v", err)
 	}
+}
+
+func waitForHelmRelease(t *testing.T, namespace, name string) {
+	t.Helper()
+
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+	err := wait.For(t.Context(), 50*time.Millisecond, "helmrelease "+name, func(ctx context.Context) (bool, error) {
+		var hr helmv2.HelmRelease
+		err := k8sClient.Get(ctx, key, &hr)
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return err == nil, err
+	})
+	if err != nil {
+		t.Fatalf("wait for helmrelease %s/%s: %v", namespace, name, err)
+	}
+}
+
+// The regression guard for the engine/controller-runtime lifecycle bug: a
+// managed controller (ctrl.NewControllerManagedBy(mgr).Complete) runs on the
+// manager's own context and registers its name in a process-global registry
+// that is never freed, so calling SetupWithManager again for the same kind
+// after the engine's Stop failed forever with "already exists" — and,
+// separately, the first controller kept running regardless of the ctx the
+// engine thought it owned. This proves both are fixed: the second
+// registration succeeds, and it is actually functional, not just error-free.
+func TestServiceSetupWithManager_StartAfterStopSucceeds(t *testing.T) {
+	installPostgresCRD(t)
+	ensureNamespace(t, "tenant-service")
+
+	mgr, err := manager.New(restCfg, ctrl.Options{
+		Scheme:  scheme,
+		Metrics: metricsserver.Options{BindAddress: "0"},
+	})
+	if err != nil {
+		t.Fatalf("build manager: %v", err)
+	}
+	mgrCtx, cancelMgr := context.WithCancel(t.Context())
+	t.Cleanup(cancelMgr)
+	go func() {
+		_ = mgr.Start(mgrCtx)
+	}()
+	if !mgr.GetCache().WaitForCacheSync(mgrCtx) {
+		t.Fatal("cache did not sync")
+	}
+
+	class := postgresClass()
+	class.Name = "postgres-restart"
+	class.Spec.StatusFrom = nil
+	r := serviceReconciler(t, class)
+
+	ctx1, cancel1 := context.WithCancel(t.Context())
+	if err := r.SetupWithManager(ctx1, mgr); err != nil {
+		t.Fatalf("first SetupWithManager: %v", err)
+	}
+	newPostgres(t, "tenant-service", "restart-one")
+	waitForHelmRelease(t, "tenant-service", "restart-one")
+
+	cancel1() // simulate the engine's Stop for this kind
+
+	ctx2, cancel2 := context.WithCancel(t.Context())
+	t.Cleanup(cancel2)
+	if err := r.SetupWithManager(ctx2, mgr); err != nil {
+		t.Fatalf("second SetupWithManager after stop: %v", err)
+	}
+	newPostgres(t, "tenant-service", "restart-two")
+	waitForHelmRelease(t, "tenant-service", "restart-two")
 }
 
