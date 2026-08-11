@@ -17,6 +17,7 @@ import (
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
+	"github.com/rusik69/paas/internal/chart"
 	"github.com/rusik69/paas/internal/controller/platform"
 	"github.com/rusik69/paas/internal/controller/tenant"
 	"github.com/rusik69/paas/internal/crd"
@@ -77,6 +78,7 @@ func run(installTimeout time.Duration, metricsAddress, apiEndpoint string, insec
 		MetricsAddress: metricsAddress,
 		APIEndpoint:    tenant.APIEndpoint{URL: apiEndpoint, CA: apiServerCA(cfg)},
 		Fetcher:        &platform.OCIFetcher{Insecure: insecureRegistry},
+		SchemaFetcher:  &chart.OCIFetcher{Insecure: insecureRegistry},
 	})
 	if err != nil {
 		return err

@@ -53,16 +53,19 @@ func applyAll(ctx context.Context, c client.Client, crds []*apiextensionsv1.Cust
 	// Separately, and after every apply: waiting inline would serialise a slow
 	// establishment behind each other CRD's apply for no reason.
 	for _, crd := range crds {
-		if err := waitEstablished(ctx, c, crd.Name); err != nil {
+		if err := WaitEstablished(ctx, c, crd.Name); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// waitEstablished polls rather than watches: this runs once at startup, and a
-// watch would cost a cache and an informer for a wait measured in seconds.
-func waitEstablished(ctx context.Context, c client.Client, name string) error {
+// WaitEstablished blocks until the named CRD is Established, its names are
+// rejected, or ctx is done.
+//
+// It polls rather than watches: its callers wait seconds for a handful of
+// CRDs, and a watch would cost a cache and an informer for each.
+func WaitEstablished(ctx context.Context, c client.Client, name string) error {
 	return wait.For(ctx, time.Second, "crd "+name+" Established", func(ctx context.Context) (bool, error) {
 		got := &apiextensionsv1.CustomResourceDefinition{}
 		if err := c.Get(ctx, types.NamespacedName{Name: name}, got); err != nil {

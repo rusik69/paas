@@ -21,9 +21,12 @@ import (
 
 	corev1alpha1 "github.com/rusik69/paas/api/core/v1alpha1"
 	"github.com/rusik69/paas/api/platform/v1alpha1"
+	"github.com/rusik69/paas/internal/chart"
+	"github.com/rusik69/paas/internal/controller/engine"
 	"github.com/rusik69/paas/internal/controller/packagesource"
 	pkgctl "github.com/rusik69/paas/internal/controller/pkg"
 	"github.com/rusik69/paas/internal/controller/platform"
+	"github.com/rusik69/paas/internal/controller/serviceclass"
 	"github.com/rusik69/paas/internal/controller/tenant"
 )
 
@@ -56,6 +59,9 @@ type Options struct {
 	MetricsAddress string
 	// Fetcher resolves a platform version into its release.
 	Fetcher platform.Fetcher
+	// SchemaFetcher reads a catalog chart's values.schema.json, which becomes
+	// the generated kind's schema.
+	SchemaFetcher chart.Fetcher
 }
 
 // NewManager builds a manager with every platform reconciler registered.
@@ -72,6 +78,10 @@ func NewManager(cfg *rest.Config, opts Options) (manager.Manager, error) {
 		return nil, fmt.Errorf("build manager: %w", err)
 	}
 
+	// Built before the table, because the ServiceClass reconciler holds it and
+	// its Builder needs the manager the table is registering against.
+	eng := &engine.Engine{Manager: mgr, Build: serviceclass.BuilderFor(mgr)}
+
 	// Table rather than three near-identical blocks: one error path to get
 	// right, and the reconciler's name in the message comes from the same place
 	// every time.
@@ -86,6 +96,9 @@ func NewManager(cfg *rest.Config, opts Options) (manager.Manager, error) {
 		}).SetupWithManager},
 		{"tenant", (&tenant.Reconciler{
 			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Endpoint: opts.APIEndpoint,
+		}).SetupWithManager},
+		{"serviceclass", (&serviceclass.Reconciler{
+			Client: mgr.GetClient(), Fetcher: opts.SchemaFetcher, Engine: eng,
 		}).SetupWithManager},
 	}
 	for _, s := range setups {

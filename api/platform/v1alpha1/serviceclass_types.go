@@ -54,11 +54,19 @@ type UISpec struct {
 // ServiceClassSpec declares one tenant-facing kind and the chart behind it.
 type ServiceClassSpec struct {
 	// Kind is the generated kind in apps.paas.io/v1alpha1.
+	//
+	// Immutable: it names the CRD this class serves, so editing it would leave
+	// the previous kind's CRD serving with a controller nothing can reach to
+	// stop. Renaming a service is a migration, not an update.
 	// +kubebuilder:validation:Pattern=`^[A-Z][A-Za-z0-9]*$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="kind is immutable"
 	Kind string `json:"kind"`
 
 	// Plural is the lowercase plural used in the resource path.
+	//
+	// Immutable, for the reason kind is.
 	// +kubebuilder:validation:Pattern=`^[a-z][a-z0-9]*$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="plural is immutable"
 	Plural string `json:"plural"`
 
 	// Chart supplies the values.schema.json that becomes this kind's schema.

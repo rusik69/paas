@@ -70,13 +70,27 @@ spec:
                 - version
                 type: object
               kind:
-                description: Kind is the generated kind in apps.paas.io/v1alpha1.
+                description: |-
+                  Kind is the generated kind in apps.paas.io/v1alpha1.
+
+                  Immutable: it names the CRD this class serves, so editing it would leave
+                  the previous kind's CRD serving with a controller nothing can reach to
+                  stop. Renaming a service is a migration, not an update.
                 pattern: ^[A-Z][A-Za-z0-9]*$
                 type: string
+                x-kubernetes-validations:
+                - message: kind is immutable
+                  rule: self == oldSelf
               plural:
-                description: Plural is the lowercase plural used in the resource path.
+                description: |-
+                  Plural is the lowercase plural used in the resource path.
+
+                  Immutable, for the reason kind is.
                 pattern: ^[a-z][a-z0-9]*$
                 type: string
+                x-kubernetes-validations:
+                - message: plural is immutable
+                  rule: self == oldSelf
               statusFrom:
                 description: StatusFrom propagates fields out of the objects the chart
                   creates.
