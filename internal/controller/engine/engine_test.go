@@ -15,6 +15,8 @@ import (
 
 var testGVK = schema.GroupVersionKind{Group: "apps.paas.io", Version: "v1alpha1", Kind: "Postgres"}
 
+var otherGVK = schema.GroupVersionKind{Group: "apps.paas.io", Version: "v1alpha1", Kind: "MySQL"}
+
 // fakeManager satisfies ctrl.Manager by embedding a nil one and overriding
 // only the method removeFromCache calls; anything else would panic, which is
 // the point — a test that reaches further than GetCache is testing the wrong
@@ -91,6 +93,13 @@ func TestEngine_StopCancelsBeforeRemoving(t *testing.T) {
 	}
 	if e.Running(testGVK) {
 		t.Error("Running reports true after Stop")
+	}
+}
+
+func TestEngine_RunningFalseForAnUnseenGVK(t *testing.T) {
+	e := &Engine{Build: func(context.Context, schema.GroupVersionKind) error { return nil }}
+	if e.Running(testGVK) {
+		t.Error("Running reports true for a gvk that was never started or stopped")
 	}
 }
 
@@ -206,6 +215,85 @@ func TestEngine_StopBlocksConcurrentStartForSameGVK(t *testing.T) {
 	}
 	if !e.Running(testGVK) {
 		t.Error("Running reports false after the blocked Start completed")
+	}
+}
+
+// TestEngine_StopForOneGVKDoesNotBlockStartForAnother proves cross-GVK
+// concurrency with a hang, not a timing window: if Start(otherGVK) queued
+// behind Stop(testGVK)'s in-flight removeInformer, this call would block
+// forever, since releaseRemove is not closed until after it returns.
+func TestEngine_StopForOneGVKDoesNotBlockStartForAnother(t *testing.T) {
+	removeStarted := make(chan struct{})
+	releaseRemove := make(chan struct{})
+
+	e := &Engine{
+		Build: func(context.Context, schema.GroupVersionKind) error { return nil },
+		removeInformer: func(_ context.Context, gvk schema.GroupVersionKind) error {
+			if gvk == testGVK {
+				close(removeStarted)
+				<-releaseRemove
+			}
+			return nil
+		},
+	}
+
+	if err := e.Start(t.Context(), testGVK); err != nil {
+		t.Fatalf("Start(testGVK): %v", err)
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- e.Stop(t.Context(), testGVK) }()
+	<-removeStarted // Stop(testGVK) is now blocked inside removeInformer.
+
+	if err := e.Start(t.Context(), otherGVK); err != nil {
+		t.Fatalf("Start(otherGVK): %v", err)
+	}
+	if !e.Running(otherGVK) {
+		t.Error("Running(otherGVK) reports false right after Start(otherGVK) completed")
+	}
+
+	close(releaseRemove)
+	if err := <-stopDone; err != nil {
+		t.Fatalf("Stop(testGVK): %v", err)
+	}
+}
+
+// TestEngine_RunningDoesNotBlockBehindAnotherGVKsStop proves the same
+// property for Running: it must not queue behind an unrelated kind's
+// teardown. Like the test above, a regression here hangs rather than races.
+func TestEngine_RunningDoesNotBlockBehindAnotherGVKsStop(t *testing.T) {
+	removeStarted := make(chan struct{})
+	releaseRemove := make(chan struct{})
+
+	e := &Engine{
+		Build: func(context.Context, schema.GroupVersionKind) error { return nil },
+		removeInformer: func(_ context.Context, gvk schema.GroupVersionKind) error {
+			if gvk == testGVK {
+				close(removeStarted)
+				<-releaseRemove
+			}
+			return nil
+		},
+	}
+
+	if err := e.Start(t.Context(), testGVK); err != nil {
+		t.Fatalf("Start(testGVK): %v", err)
+	}
+	if err := e.Start(t.Context(), otherGVK); err != nil {
+		t.Fatalf("Start(otherGVK): %v", err)
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- e.Stop(t.Context(), testGVK) }()
+	<-removeStarted // Stop(testGVK) is now blocked inside removeInformer.
+
+	if !e.Running(otherGVK) {
+		t.Error("Running(otherGVK) reports false while Stop(testGVK) is blocked")
+	}
+
+	close(releaseRemove)
+	if err := <-stopDone; err != nil {
+		t.Fatalf("Stop(testGVK): %v", err)
 	}
 }
 
