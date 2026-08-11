@@ -71,6 +71,39 @@ The positive half matters as much as the negative: a token that authenticates no
 a 401 everywhere, which would pass a carelessly written negative test. The same trap the
 network-policy tests already avoid with their controls.
 
+## Findings from the attempt (2026-08-11)
+
+Everything below the issuer's reachability now works and is committed: Keycloak serves TLS from
+the generated CA, the realm imports, a token is issued, and the API server has its flags. Four
+silent failure modes were found and fixed on the way — the management interface going TLS with
+the client port and breaking the chart's HTTP probes; busybox's wget being unable to speak TLS
+at all; a public client's `aud` claim carrying `account` rather than the client id; and a stale
+certificate being reused for a changed address.
+
+**What is still unsolved is reachability, and the cause is now narrowed.** The API server
+cannot dial the issuer through *any* Kubernetes Service:
+
+- a pinned ClusterIP was refused with `connect: operation not permitted`, with the Service's
+  endpoints healthy;
+- a NodePort on the control-plane's own address was refused the same way.
+
+Both are EPERM from Cilium's socket load balancer. It translates service addresses for pods and
+for host-network pods — `TestRegistry_ClusterIPReachableFromHostNetwork` proves that much — but
+the `kube-apiserver` static pod does not get that translation, and the authenticator retries
+every ten seconds saying so. The precedent that motivated the ClusterIP design does not
+transfer, and neither does the NodePort fallback.
+
+**The remaining approach is to avoid service translation altogether**: run Keycloak with
+`hostNetwork: true`, pinned to the control-plane node, binding the issuer port directly. The API
+server then dials the node's own address with no Service involved, and in-cluster clients can
+reach the same address because a node IP is routable from pods. The certificate SAN, the issuer
+URL and `KC_HOSTNAME` all become that node address, and `hack/e2e.sh` already regenerates the
+certificate when that address changes.
+
+Worth checking first, as it may be cheaper: whether a Cilium setting (`socketLB`,
+`bpf-lb-sock-hostns-only` and neighbours) is what excludes the static pod. If one does, a values
+change beats moving Keycloak onto the host network.
+
 ## Risks
 
 **A bad `--oidc-issuer-url` can stop the API server coming up**, and on a single control-plane
