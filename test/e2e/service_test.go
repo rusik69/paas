@@ -72,6 +72,14 @@ func conditionStatus(obj *unstructured.Unstructured, condType string) (status, r
 	return "", ""
 }
 
+// releaseNameFor is the name the service reconciler derives for a CR's
+// HelmRelease, and so the Helm release name every object the chart creates is
+// named after — the CNPG Cluster included. Two generated kinds can carry the
+// same CR name in one namespace, and one release cannot install two charts.
+func releaseNameFor(name, kind string) string {
+	return name + "-" + strings.ToLower(kind)
+}
+
 func postgresFixture(ns, name string, spec map[string]any) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apps.paas.io/v1alpha1",
@@ -110,7 +118,8 @@ func waitPostgresReady(t *testing.T, ns, name string, wantInstances int64, timeo
 			status, _ := conditionStatus(got, "Ready")
 			p, _, _ := unstructured.NestedString(got.Object, "status", "primary")
 
-			cluster, err := dynClient.Resource(clusterGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+			cluster, err := dynClient.Resource(clusterGVR).Namespace(ns).
+				Get(ctx, releaseNameFor(name, "Postgres"), metav1.GetOptions{})
 			if err != nil {
 				if ctx.Err() == nil {
 					last = fmt.Sprintf("postgres ready=%s primary=%q; cnpg cluster: %v", status, p, err)
@@ -182,7 +191,8 @@ func TestService_PostgresBecomesReadyAndReportsItsPrimary(t *testing.T) {
 		t.Fatal("postgres reports no primary")
 	}
 
-	cluster, err := dynClient.Resource(clusterGVR).Namespace(ns).Get(t.Context(), name, metav1.GetOptions{})
+	cluster, err := dynClient.Resource(clusterGVR).Namespace(ns).
+		Get(t.Context(), releaseNameFor(name, "Postgres"), metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("get cnpg cluster %s/%s: %v", ns, name, err)
 	}
@@ -300,7 +310,7 @@ func TestService_DeleteReclaimsEverything(t *testing.T) {
 
 	waitPostgresReady(t, ns, name, 1, 15*time.Minute)
 
-	if n := pvcCount(t.Context(), t, ns, name); n == 0 {
+	if n := pvcCount(t.Context(), t, ns, releaseNameFor(name, "Postgres")); n == 0 {
 		t.Fatal("no PVCs exist before deletion; the reclaim assertion below would prove nothing")
 	}
 
@@ -312,9 +322,10 @@ func TestService_DeleteReclaimsEverything(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
 
-	if err := wait.For(ctx, 5*time.Second, "helmrelease "+name+" reclaimed",
+	release := releaseNameFor(name, "Postgres")
+	if err := wait.For(ctx, 5*time.Second, "helmrelease "+release+" reclaimed",
 		func(ctx context.Context) (bool, error) {
-			_, err := dynClient.Resource(helmReleaseGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+			_, err := dynClient.Resource(helmReleaseGVR).Namespace(ns).Get(ctx, release, metav1.GetOptions{})
 			return apierrors.IsNotFound(err), nil
 		}); err != nil {
 		if t.Failed() {
@@ -323,9 +334,9 @@ func TestService_DeleteReclaimsEverything(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 
-	if err := wait.For(ctx, 5*time.Second, "cnpg cluster "+name+" reclaimed",
+	if err := wait.For(ctx, 5*time.Second, "cnpg cluster "+release+" reclaimed",
 		func(ctx context.Context) (bool, error) {
-			_, err := dynClient.Resource(clusterGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+			_, err := dynClient.Resource(clusterGVR).Namespace(ns).Get(ctx, release, metav1.GetOptions{})
 			return apierrors.IsNotFound(err), nil
 		}); err != nil {
 		dumpNamespace(t, ns)
@@ -333,9 +344,9 @@ func TestService_DeleteReclaimsEverything(t *testing.T) {
 	}
 
 	var lastPVCs int
-	if err := wait.For(ctx, 5*time.Second, "pvcs for "+name+" reclaimed",
+	if err := wait.For(ctx, 5*time.Second, "pvcs for "+release+" reclaimed",
 		func(ctx context.Context) (bool, error) {
-			lastPVCs = pvcCount(ctx, t, ns, name)
+			lastPVCs = pvcCount(ctx, t, ns, release)
 			return lastPVCs == 0, nil
 		}); err != nil {
 		dumpNamespace(t, ns)

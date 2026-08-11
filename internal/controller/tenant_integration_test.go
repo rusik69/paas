@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	corev1alpha1 "github.com/rusik69/paas/api/core/v1alpha1"
+	"github.com/rusik69/paas/internal/controller/service"
 	tenantctl "github.com/rusik69/paas/internal/controller/tenant"
 	"github.com/rusik69/paas/pkg/tenancy"
 )
@@ -311,6 +312,24 @@ func TestTenant_EveryDepthGetsItsOwnPolicies(t *testing.T) {
 		}
 		if !strings.Contains(fmt.Sprint(opt.Object), "kube-apiserver") {
 			t.Errorf("%s: the opt-in policy grants nothing", ns)
+		}
+
+		// The platform's reach into the namespace is its own object at every
+		// depth too, and it selects the managed instances rather than the
+		// namespace.
+		fromPlatform := policy(t, ns, tenantctl.PolicyAllowPlatform)
+		expressions, found, err := unstructured.NestedSlice(fromPlatform.Object,
+			"spec", "endpointSelector", "matchExpressions")
+		if err != nil || !found || len(expressions) != 1 {
+			t.Errorf("%s: matchExpressions = %v (found %t, err %v), want one selecting the chart-contract label",
+				ns, expressions, found, err)
+		}
+		if !strings.Contains(fmt.Sprint(fromPlatform.Object), service.LabelServiceName) {
+			t.Errorf("%s: the platform allowance does not select %s, so it reaches every pod or none",
+				ns, service.LabelServiceName)
+		}
+		if _, found, _ := unstructured.NestedSlice(fromPlatform.Object, "spec", "egress"); found {
+			t.Errorf("%s: the platform allowance carries egress; it was meant to stay ingress-only", ns)
 		}
 	}
 }

@@ -5,8 +5,10 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -16,8 +18,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"github.com/rusik69/paas/api/platform/v1alpha1"
+	"github.com/rusik69/paas/internal/chart"
 	"github.com/rusik69/paas/internal/controller/engine"
 	"github.com/rusik69/paas/internal/controller/platform"
 )
@@ -49,8 +53,18 @@ type stubFetcher struct {
 	err error
 }
 
-func (f stubFetcher) Schema(context.Context, string, string, string) ([]byte, error) {
+func (f stubFetcher) Schema(context.Context, chart.Source, string, string) ([]byte, error) {
 	return f.raw, f.err
+}
+
+// recordingFetcher keeps the Source it was called with, so a test can assert
+// the schema pull and the HelmRepository take their transport from the same
+// place rather than from two settings that happen to agree.
+type recordingFetcher struct{ src chart.Source }
+
+func (f *recordingFetcher) Schema(_ context.Context, src chart.Source, _, _ string) ([]byte, error) {
+	f.src = src
+	return []byte(validSchema), nil
 }
 
 func builder(t *testing.T, objects ...client.Object) *fake.ClientBuilder {
@@ -67,7 +81,7 @@ func builder(t *testing.T, objects ...client.Object) *fake.ClientBuilder {
 // trusted for behaviour — go-guidelines says testing it there tests the fake —
 // so these assert the branches around it, and the apply itself is asserted in
 // the envtest suite.
-func testReconciler(t *testing.T, c client.Client, f stubFetcher) *Reconciler {
+func testReconciler(t *testing.T, c client.Client, f chart.Fetcher) *Reconciler {
 	t.Helper()
 
 	return &Reconciler{
@@ -395,7 +409,12 @@ func TestReconcile_DeletionWithoutACRDReleasesTheClass(t *testing.T) {
 	}
 
 	var sc v1alpha1.ServiceClass
-	if err := c.Get(t.Context(), types.NamespacedName{Name: "postgres"}, &sc); err == nil && len(sc.Finalizers) > 0 {
+	switch err := c.Get(t.Context(), types.NamespacedName{Name: "postgres"}, &sc); {
+	case apierrors.IsNotFound(err):
+		// The fake client reclaims an object once its last finalizer goes.
+	case err != nil:
+		t.Fatalf("get serviceclass: %v", err)
+	case len(sc.Finalizers) > 0:
 		t.Errorf("finalizers = %v, want released", sc.Finalizers)
 	}
 }
@@ -528,6 +547,87 @@ func TestSourceFrom_ReadsTheRegistryAndItsTransport(t *testing.T) {
 	}
 	if src.Registry != "oci://registry.test/charts" || !src.Insecure {
 		t.Errorf("source = %+v, want the PackageSource's own url and transport", src)
+	}
+}
+
+// The drift this closes: the schema pull once took its transport from an
+// operator flag while the HelmRepository took it from the PackageSource, so
+// the same registry could be reached two ways.
+func TestReconcile_PullsTheSchemaWithThePackageSourcesOwnTransport(t *testing.T) {
+	t.Parallel()
+
+	c := builder(t, testClass(), testSource(), establishedCRD()).
+		WithInterceptorFuncs(interceptor.Funcs{Patch: applyIsANoOp}).Build()
+	f := &recordingFetcher{}
+
+	if _, err := testReconciler(t, c, f).Reconcile(t.Context(), request()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	want := chart.Source{Registry: "oci://registry.test/charts", Insecure: true}
+	if f.src != want {
+		t.Errorf("schema pulled from %+v, want the PackageSource's own %+v", f.src, want)
+	}
+}
+
+// A kind whose controller stopped stays dead unless something reconciles its
+// class again: the engine frees the slot, and this is what turns that into a
+// restart.
+func TestWakeOnStop_SendsTheOwningClass(t *testing.T) {
+	t.Parallel()
+
+	c := builder(t, testClass()).Build()
+	wake := make(chan event.GenericEvent, 1)
+
+	WakeOnStop(c, wake)(t.Context(), GVKFor(testClass()))
+
+	select {
+	case ev := <-wake:
+		if ev.Object == nil || ev.Object.GetName() != "postgres" {
+			t.Errorf("event names %v, want the ServiceClass the stopped kind came from", ev.Object)
+		}
+	default:
+		t.Error("nothing was sent; the freed slot would stay unserved until the informer's ten-hour resync")
+	}
+}
+
+// A class deleted is the ordinary reason a kind stops. There is nothing to
+// wake, and blocking or panicking over it would be a worse answer than
+// silence.
+func TestWakeOnStop_UnknownKindSendsNothing(t *testing.T) {
+	t.Parallel()
+
+	c := builder(t).Build()
+	wake := make(chan event.GenericEvent, 1)
+
+	WakeOnStop(c, wake)(t.Context(), GVKFor(testClass()))
+
+	select {
+	case ev := <-wake:
+		t.Errorf("sent %v for a kind no class generates", ev.Object)
+	default:
+	}
+}
+
+// The send is bounded: an already-cancelled context must return rather than
+// hold the goroutine that reported the stop.
+func TestWakeOnStop_GivesUpWhenNothingReceives(t *testing.T) {
+	t.Parallel()
+
+	c := builder(t, testClass()).Build()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		WakeOnStop(c, make(chan event.GenericEvent))(ctx, GVKFor(testClass()))
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Error("WakeOnStop blocked on an unreceived send with its context already cancelled")
 	}
 }
 

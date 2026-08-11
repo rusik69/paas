@@ -13,7 +13,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/rusik69/paas/api/platform/v1alpha1"
 	"github.com/rusik69/paas/internal/chart"
@@ -60,13 +62,6 @@ const (
 	ReasonMarkFailed          = "OrphanMarkFailed"
 )
 
-// Source is the registry catalog charts are pulled from, and whether it speaks
-// plain HTTP.
-type Source struct {
-	Registry string
-	Insecure bool
-}
-
 // SourceFrom reads the platform's own PackageSource.
 //
 // The schema pull here and the HelmRepository the service reconciler renders
@@ -75,12 +70,50 @@ type Source struct {
 // makes that agreement checkable; a second constant would let the two drift,
 // and the failure — every tenant chart pull refused against a plain-HTTP
 // registry — is invisible to any test that does not pull a real chart.
-func SourceFrom(ctx context.Context, c client.Reader) (Source, error) {
+func SourceFrom(ctx context.Context, c client.Reader) (chart.Source, error) {
 	var src v1alpha1.PackageSource
 	if err := c.Get(ctx, client.ObjectKey{Name: platform.SourceName}, &src); err != nil {
-		return Source{}, fmt.Errorf("read packagesource %s: %w", platform.SourceName, err)
+		return chart.Source{}, fmt.Errorf("read packagesource %s: %w", platform.SourceName, err)
 	}
-	return Source{Registry: src.Spec.URL, Insecure: src.Spec.Insecure}, nil
+	return chart.Source{Registry: src.Spec.URL, Insecure: src.Spec.Insecure}, nil
+}
+
+// WakeTimeout bounds one wake: long enough for a controller to accept the
+// event, short enough that a shutting-down manager does not hold the goroutine
+// that reported the stop.
+const WakeTimeout = 30 * time.Second
+
+// WakeOnStop is the engine.Engine.Stopped callback: it puts a ServiceClass
+// back through reconcile when the controller for its kind stops.
+//
+// The engine frees the kind's slot when its run loop returns, but freeing it
+// only makes a later Start possible. Nothing issues one — Reconcile requeues
+// on nothing, and only a ServiceClass or generated-CRD event wakes it — so a
+// kind that died to a cache-sync timeout would stay unserved until the
+// informer's ten-hour resync. Feeding the class back in is what turns the
+// freed slot into a restart.
+//
+// A callback the operator supplies rather than anything the engine knows: the
+// engine importing this package would be the cycle BuilderFor already avoids.
+func WakeOnStop(c client.Reader, wake chan<- event.GenericEvent) func(context.Context, schema.GroupVersionKind) {
+	return func(ctx context.Context, gvk schema.GroupVersionKind) {
+		ctx, cancel := context.WithTimeout(ctx, WakeTimeout)
+		defer cancel()
+
+		sc, err := classFor(ctx, c, gvk)
+		if err != nil {
+			// Ordinary during a delete: the class the kind came from is gone,
+			// which is why nothing is serving it.
+			ctrl.LoggerFrom(ctx).V(1).Info("no serviceclass to wake for a stopped kind", "gvk", gvk, "error", err)
+			return
+		}
+		select {
+		case wake <- event.GenericEvent{Object: sc}:
+		case <-ctx.Done():
+			ctrl.LoggerFrom(ctx).Error(ctx.Err(), "gave up waking serviceclass for a stopped kind",
+				"serviceclass", sc.Name, "gvk", gvk)
+		}
+	}
 }
 
 // BuilderFor returns the engine.Builder that runs the controller for a
@@ -138,14 +171,21 @@ type Reconciler struct {
 	Fetcher chart.Fetcher
 	// Engine owns the controllers for the kinds this reconciler establishes.
 	Engine *engine.Engine
+	// Wake carries classes whose kind stopped being served, from the engine
+	// callback WakeOnStop returns. Nil registers no such watch, which is what
+	// a test that drives Reconcile directly wants.
+	Wake <-chan event.GenericEvent
 }
 
 // SetupWithManager registers the reconciler.
 func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.ServiceClass{}).
-		Watches(&apiextensionsv1.CustomResourceDefinition{}, handler.EnqueueRequestsFromMapFunc(byManagedClass)).
-		Complete(r)
+		Watches(&apiextensionsv1.CustomResourceDefinition{}, handler.EnqueueRequestsFromMapFunc(byManagedClass))
+	if r.Wake != nil {
+		b = b.WatchesRawSource(source.Channel(r.Wake, &handler.EnqueueRequestForObject{}))
+	}
+	return b.Complete(r)
 }
 
 // byManagedClass maps a generated CRD back to the class it came from.
@@ -183,7 +223,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if err != nil {
 		return ctrl.Result{}, r.fail(ctx, &sc, ReasonChartUnavailable, err)
 	}
-	raw, err := r.Fetcher.Schema(ctx, src.Registry, sc.Spec.Chart.Name, sc.Spec.Chart.Version)
+	raw, err := r.Fetcher.Schema(ctx, src, sc.Spec.Chart.Name, sc.Spec.Chart.Version)
 	if err != nil {
 		// Nothing below runs on this path, deliberately: a registry blip must
 		// never take a serving kind away from the tenants using it.

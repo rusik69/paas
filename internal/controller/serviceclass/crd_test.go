@@ -1,11 +1,14 @@
 package serviceclass
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/rusik69/paas/api/platform/v1alpha1"
+	paasschema "github.com/rusik69/paas/internal/schema"
 )
 
 func testClass() *v1alpha1.ServiceClass {
@@ -86,6 +89,21 @@ func TestCRDFor_RejectsUnrepresentableSchema(t *testing.T) {
 	}
 	if crd != nil {
 		t.Error("CRDFor returned a CRD alongside its error")
+	}
+
+	// The specific refusal, not merely a refusal: whoever publishes the chart
+	// can only act on the path and the reason, and a test that took any error
+	// would keep passing if the converter started dropping what it cannot
+	// represent — which is the one failure this design must never have.
+	var unrepresentable *paasschema.UnrepresentableError
+	if !errors.As(err, &unrepresentable) {
+		t.Fatalf("err = %v (%T), want an UnrepresentableError", err, err)
+	}
+	if unrepresentable.Path != ".properties.a" {
+		t.Errorf("path = %q, want the offending JSON path", unrepresentable.Path)
+	}
+	if !strings.Contains(err.Error(), "postgres:0.1.0") {
+		t.Errorf("err = %q, want it to name the chart version whose schema is unrepresentable", err)
 	}
 }
 

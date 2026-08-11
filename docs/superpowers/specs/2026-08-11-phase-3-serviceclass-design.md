@@ -154,7 +154,21 @@ paas.io/service-namespace: {{ .Release.Namespace }}
 
 That is what lets a status watch on an arbitrary underlying kind — a CNPG `Cluster` we did not
 create and do not own — map back to the CR whose status it belongs in, without inventing owner
-references across a boundary Helm controls.
+references across a boundary Helm controls. It is also what the tenant policy allowing ingress
+from `paas-system` selects on, so the platform's operators reach the instances they provision
+and nothing else the tenant runs (architecture.md §4).
+
+**The release name is `<cr-name>-<lowercased kind>`,** not the CR's name. Two generated kinds
+can carry the same CR name in one namespace, and both would otherwise render the same
+`HelmRelease`: the API server refuses the second controller owner reference, and helm-controller,
+seeing the chart name flip between reconciles, upgrades the release to the other chart — which
+deletes the first kind's underlying object and every PVC owner-referenced to it. A tenant loses
+a database by naming a cache after it. So `paas.io/service-name` carries the release name, and
+`service.Reconciler` composes and decomposes it in the three places that must agree: the
+`HelmRelease` it renders, the label selector `readStatusFrom` lists by, and the suffix
+`byServiceLabels` strips to get back to the CR. Helm caps a release name at 53 characters, so
+the CR name is bounded by that minus the kind; a longer one is refused by name rather than left
+to fail inside helm-controller.
 
 **A chart whose workload needs the API server must opt itself in.** Phase 2's tenant default-deny
 policy blocks pod→apiserver unless the pod carries `policy.paas.io/allow-to-apiserver: "true"`

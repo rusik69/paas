@@ -18,6 +18,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -57,16 +59,16 @@ func ensurePlatformSource(t *testing.T) {
 	}
 }
 
-// fakeSchema stands in for the OCI fetcher and records the registry it was
-// asked to pull from.
+// fakeSchema stands in for the OCI fetcher and records the Source it was asked
+// to pull with — the registry and its transport together.
 type fakeSchema struct {
-	raw      []byte
-	err      error
-	registry string
+	raw    []byte
+	err    error
+	source chart.Source
 }
 
-func (f *fakeSchema) Schema(_ context.Context, registry, _, _ string) ([]byte, error) {
-	f.registry = registry
+func (f *fakeSchema) Schema(_ context.Context, src chart.Source, _, _ string) ([]byte, error) {
+	f.source = src
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -230,11 +232,11 @@ func TestServiceClass_EstablishesTheCRDAndStartsAController(t *testing.T) {
 
 	reconcileUntilReady(t, sc.Name, serviceClassReconciler(f, eng))
 
-	// The registry comes from the platform's own PackageSource rather than a
-	// constant of the serviceclass package, so the schema pull and the tenant
-	// HelmRepository cannot name different registries.
-	if f.registry != testRegistry {
-		t.Errorf("fetched from %q, want the platform PackageSource's %q", f.registry, testRegistry)
+	// Registry and transport both come from the platform's own PackageSource
+	// rather than a constant or an operator flag, so the schema pull and the
+	// tenant HelmRepository cannot reach the same registry two ways.
+	if want := (chart.Source{Registry: testRegistry, Insecure: true}); f.source != want {
+		t.Errorf("fetched with %+v, want the platform PackageSource's %+v", f.source, want)
 	}
 
 	crd := getCRD(t, "widgets")
@@ -583,6 +585,90 @@ func TestServiceClass_BuilderRunsTheKindsController(t *testing.T) {
 		!strings.Contains(err.Error(), "Nonesuch") {
 		t.Errorf("err = %v, want it to say no serviceclass generates Nonesuch", err)
 	}
+}
+
+// The whole loop, wired as the operator wires it: a controller that stops
+// without anyone asking — a cache-sync timeout is the real case — frees its
+// slot in the engine, and something has to notice and start it again.
+//
+// Nothing did. Reconcile requeues on nothing, and only a ServiceClass or a
+// generated-CRD event wakes the class, so the kind stayed unserved until the
+// informer's ten-hour resync: every tenant object of that kind silently
+// stopped reconciling. The wake channel is what closes it, and this fails
+// rather than hangs if it does not.
+func TestServiceClass_AKindThatStoppedOnItsOwnIsStartedAgain(t *testing.T) {
+	ensurePlatformSource(t)
+
+	// controller-runtime's controller-name registry is process-global and never
+	// freed, so a second manager registering "serviceclass" is refused. Skipping
+	// the check for this manager alone also keeps the name out of the registry,
+	// leaving the other test that registers it unaffected whichever runs first.
+	skipNameValidation := true
+	mgr, err := manager.New(restCfg, ctrl.Options{
+		Scheme:     scheme,
+		Metrics:    metricsserver.Options{BindAddress: "0"},
+		Controller: config.Controller{SkipNameValidation: &skipNameValidation},
+	})
+	if err != nil {
+		t.Fatalf("build manager: %v", err)
+	}
+
+	var mu sync.Mutex
+	var builds int
+	var done func()
+	wake := make(chan event.GenericEvent)
+	eng := &engine.Engine{
+		Manager: mgr,
+		Build: func(_ context.Context, _ schema.GroupVersionKind, d func()) error {
+			mu.Lock()
+			defer mu.Unlock()
+			builds++
+			done = d
+			return nil
+		},
+		Stopped: serviceclass.WakeOnStop(mgr.GetClient(), wake),
+	}
+	if err := (&serviceclass.Reconciler{
+		Client:  mgr.GetClient(),
+		Fetcher: &fakeSchema{raw: []byte(validSchema)},
+		Engine:  eng,
+		Wake:    wake,
+	}).SetupWithManager(mgr); err != nil {
+		t.Fatalf("register serviceclass reconciler: %v", err)
+	}
+
+	mgrCtx, cancelMgr := context.WithCancel(t.Context())
+	go func() { _ = mgr.Start(mgrCtx) }()
+	if !mgr.GetCache().WaitForCacheSync(mgrCtx) {
+		t.Fatal("cache did not sync")
+	}
+
+	newServiceClass(t, "flange", "Flange", "flanges")
+	// Registered after the class so it runs before the class's own cleanup,
+	// which would otherwise race the controller re-applying the CRD.
+	t.Cleanup(cancelMgr)
+
+	waitBuilds := func(want int, what string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+		defer cancel()
+		err := wait.For(ctx, 50*time.Millisecond, what, func(context.Context) (bool, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			return builds >= want, nil
+		})
+		if err != nil {
+			t.Fatalf("%v", err)
+		}
+	}
+	waitBuilds(1, "the kind's controller being started")
+
+	mu.Lock()
+	stop := done
+	mu.Unlock()
+	stop() // the controller's run loop returned; nobody asked it to
+
+	waitBuilds(2, "the kind's controller being started again after it died on its own")
 }
 
 // crdConditions adapts a CRD's own condition type to the metav1 helpers, which

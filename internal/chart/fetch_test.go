@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"errors"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"net/url"
@@ -73,8 +74,12 @@ func TestSchemaFromTGZ_TooLarge(t *testing.T) {
 		"postgres/values.schema.json": string(bytes.Repeat([]byte("x"), maxSchemaFile+1)),
 	})
 
-	if _, err := schemaFromTGZ(bytes.NewReader(tgz)); err == nil {
+	_, err := schemaFromTGZ(bytes.NewReader(tgz))
+	if err == nil {
 		t.Fatal("schemaFromTGZ accepted an oversized schema; reading one unbounded is how the operator gets OOM-killed instead of reporting a bad chart")
+	}
+	if want := fmt.Sprintf("%s exceeds %d bytes", SchemaFile, maxSchemaFile); err.Error() != want {
+		t.Errorf("err = %q, want %q — any other failure would pass this test with the bound removed", err, want)
 	}
 }
 
@@ -252,7 +257,7 @@ func TestOCIFetcher_Schema_ReadsWhatWasPushed(t *testing.T) {
 	want := `{"type":"object"}`
 	pushChart(t, host, "postgres", "v1.0.0", chartTGZ(t, map[string]string{"postgres/values.schema.json": want}))
 
-	got, err := (&OCIFetcher{Insecure: true}).Schema(t.Context(), "oci://"+host, "postgres", "v1.0.0")
+	got, err := (&OCIFetcher{}).Schema(t.Context(), Source{Registry: "oci://" + host, Insecure: true}, "postgres", "v1.0.0")
 	if err != nil {
 		t.Fatalf("Schema: %v", err)
 	}
@@ -267,7 +272,7 @@ func TestOCIFetcher_Schema_MissingSchemaIsNamed(t *testing.T) {
 	host := startRegistry(t)
 	pushChart(t, host, "postgres", "v1.0.0", chartTGZ(t, map[string]string{"postgres/Chart.yaml": "name: postgres\n"}))
 
-	_, err := (&OCIFetcher{Insecure: true}).Schema(t.Context(), "oci://"+host, "postgres", "v1.0.0")
+	_, err := (&OCIFetcher{}).Schema(t.Context(), Source{Registry: "oci://" + host, Insecure: true}, "postgres", "v1.0.0")
 	if !errors.Is(err, ErrNoSchema) {
 		t.Errorf("err = %v, want ErrNoSchema", err)
 	}
@@ -281,7 +286,7 @@ func TestOCIFetcher_Schema_PullFailure(t *testing.T) {
 
 	host := startRegistry(t)
 
-	_, err := (&OCIFetcher{Insecure: true}).Schema(t.Context(), "oci://"+host, "postgres", "v0.0.0")
+	_, err := (&OCIFetcher{}).Schema(t.Context(), Source{Registry: "oci://" + host, Insecure: true}, "postgres", "v0.0.0")
 	if err == nil {
 		t.Fatal("a version that was never published was accepted")
 	}
@@ -293,15 +298,19 @@ func TestOCIFetcher_Schema_PullFailure(t *testing.T) {
 func TestOCIFetcher_Schema_RejectsAnEmptyRegistry(t *testing.T) {
 	t.Parallel()
 
-	if _, err := (&OCIFetcher{}).Schema(t.Context(), "oci://", "postgres", "v1"); err == nil {
-		t.Error("an empty registry was accepted")
+	_, err := (&OCIFetcher{}).Schema(t.Context(), Source{Registry: "oci://"}, "postgres", "v1")
+	if err == nil {
+		t.Fatal("an empty registry was accepted")
+	}
+	if err.Error() != "registry is empty" {
+		t.Errorf("err = %q, want it to name the empty registry rather than fail somewhere later", err)
 	}
 }
 
 func TestOCIFetcher_Schema_RejectsAnUnparseableReference(t *testing.T) {
 	t.Parallel()
 
-	_, err := (&OCIFetcher{}).Schema(t.Context(), "oci://NOT A HOST", "postgres", "v1")
+	_, err := (&OCIFetcher{}).Schema(t.Context(), Source{Registry: "oci://NOT A HOST"}, "postgres", "v1")
 	if err == nil {
 		t.Fatal("an unparseable reference was accepted")
 	}

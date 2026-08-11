@@ -197,8 +197,75 @@ func TestDesired_CarriesTheServiceLabels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("desired: %v", err)
 	}
-	if hr.Labels[LabelServiceName] != "db" || hr.Labels[LabelServiceNamespace] != "tenant-acme" {
-		t.Errorf("labels = %v, want the service name and namespace that status watches map back by", hr.Labels)
+	if hr.Labels[LabelServiceName] != "db-postgres" || hr.Labels[LabelServiceNamespace] != "tenant-acme" {
+		t.Errorf("labels = %v, want the release name and namespace that status watches map back by", hr.Labels)
+	}
+}
+
+// The regression this guards is tenant data destruction, not a naming
+// preference: two generated kinds with the same CR name in one namespace used
+// to render one HelmRelease. The API server refuses the second controller
+// owner reference, and helm-controller — seeing the chart name flip — upgrades
+// the release to the other chart, taking the first kind's underlying object
+// and every PVC owner-referenced to it with it.
+func TestDesired_TwoKindsWithOneCRNameDoNotCollide(t *testing.T) {
+	pg := testReconciler()
+	redis := testReconciler()
+	redis.GVK = schema.GroupVersionKind{Group: "apps.paas.io", Version: "v1alpha1", Kind: "Redis"}
+
+	first, err := pg.desired(testCR())
+	if err != nil {
+		t.Fatalf("desired (postgres): %v", err)
+	}
+	second, err := redis.desired(testCR())
+	if err != nil {
+		t.Fatalf("desired (redis): %v", err)
+	}
+
+	if first.Name == second.Name {
+		t.Fatalf("both kinds render the HelmRelease %s/%s; one release cannot install two charts",
+			first.Namespace, first.Name)
+	}
+	if first.Labels[LabelServiceName] == second.Labels[LabelServiceName] {
+		t.Errorf("both kinds stamp %s=%q; a status watch would map an underlying object back to either",
+			LabelServiceName, first.Labels[LabelServiceName])
+	}
+	if first.Name != "db-postgres" || second.Name != "db-redis" {
+		t.Errorf("names = %q and %q, want the CR name suffixed with its kind", first.Name, second.Name)
+	}
+}
+
+// Helm refuses a release name over 53 characters, so a name that composes past
+// it must be reported against the CR rather than left to fail later inside
+// helm-controller, where nothing points back at the object that caused it.
+func TestDesired_RejectsAnOverlongReleaseName(t *testing.T) {
+	cr := testCR()
+	cr.SetName(strings.Repeat("x", MaxReleaseName))
+
+	_, err := testReconciler().desired(cr)
+	if err == nil {
+		t.Fatal("a CR name that composes past Helm's release-name limit was accepted")
+	}
+	if !strings.Contains(err.Error(), "exceeds Helm's 53-character limit") {
+		t.Errorf("err = %q, want it to name the limit that refuses the release", err)
+	}
+}
+
+func TestByServiceLabels_IgnoresAnotherKindsObject(t *testing.T) {
+	obj := &unstructured.Unstructured{}
+	obj.SetLabels(map[string]string{LabelServiceName: "db-redis", LabelServiceNamespace: "tenant-acme"})
+
+	if got := testReconciler().byServiceLabels(t.Context(), obj); got != nil {
+		t.Errorf("requests = %+v, want none — a Redis release's object is not the Postgres controller's to enqueue", got)
+	}
+}
+
+func TestByServiceLabels_IgnoresABareSuffix(t *testing.T) {
+	obj := &unstructured.Unstructured{}
+	obj.SetLabels(map[string]string{LabelServiceName: "-postgres", LabelServiceNamespace: "tenant-acme"})
+
+	if got := testReconciler().byServiceLabels(t.Context(), obj); got != nil {
+		t.Errorf("requests = %+v, want none for a label that names no CR", got)
 	}
 }
 
@@ -283,9 +350,9 @@ func TestDesiredSource_CarriesInsecureThrough(t *testing.T) {
 
 func TestByServiceLabels_MapsBackToTheCR(t *testing.T) {
 	obj := &unstructured.Unstructured{}
-	obj.SetLabels(map[string]string{LabelServiceName: "db", LabelServiceNamespace: "tenant-acme"})
+	obj.SetLabels(map[string]string{LabelServiceName: "db-postgres", LabelServiceNamespace: "tenant-acme"})
 
-	got := byServiceLabels(t.Context(), obj)
+	got := testReconciler().byServiceLabels(t.Context(), obj)
 	if len(got) != 1 || got[0].Name != "db" || got[0].Namespace != "tenant-acme" {
 		t.Errorf("requests = %+v, want one naming tenant-acme/db", got)
 	}
@@ -293,7 +360,7 @@ func TestByServiceLabels_MapsBackToTheCR(t *testing.T) {
 
 func TestByServiceLabels_IgnoresUnlabelledObjects(t *testing.T) {
 	obj := &unstructured.Unstructured{}
-	if got := byServiceLabels(t.Context(), obj); got != nil {
+	if got := testReconciler().byServiceLabels(t.Context(), obj); got != nil {
 		t.Errorf("requests = %+v, want none for an object without the service labels", got)
 	}
 }
@@ -363,7 +430,7 @@ func TestReconcile_NamesTheReleaseItFailedToApply(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the client error", err)
 	}
-	if !strings.Contains(err.Error(), "db") {
+	if !strings.Contains(err.Error(), "db-postgres") {
 		t.Errorf("err = %q, want it to name the release", err)
 	}
 }
@@ -379,6 +446,9 @@ func TestReconcile_ReturnsADesiredFailure(t *testing.T) {
 	_, err := r.Reconcile(t.Context(), request("tenant-acme", "db"))
 	if err == nil {
 		t.Fatal("a CR with an unrenderable spec was accepted")
+	}
+	if !strings.Contains(err.Error(), "read spec") {
+		t.Errorf("err = %q, want the spec read to be what failed", err)
 	}
 }
 
@@ -400,7 +470,7 @@ func TestReconcile_RendersTheRepositoryAndReleaseAndSyncsStatus(t *testing.T) {
 	}
 
 	var hr helmv2.HelmRelease
-	if err := c.Get(t.Context(), types.NamespacedName{Namespace: "tenant-acme", Name: "db"}, &hr); err != nil {
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: "tenant-acme", Name: "db-postgres"}, &hr); err != nil {
 		t.Fatalf("get helmrelease: %v", err)
 	}
 
@@ -426,8 +496,12 @@ func TestConditionsFrom_RejectsANonSliceConditions(t *testing.T) {
 	cr := testCR()
 	cr.Object["status"] = map[string]any{"conditions": "not-a-list"}
 
-	if _, err := conditionsFrom(cr); err == nil {
+	_, err := conditionsFrom(cr)
+	if err == nil {
 		t.Fatal("a non-slice status.conditions was accepted")
+	}
+	if !strings.Contains(err.Error(), "conditions") {
+		t.Errorf("err = %q, want it to name the field it could not read", err)
 	}
 }
 
@@ -437,8 +511,15 @@ func TestConditionsFrom_RejectsAMalformedCondition(t *testing.T) {
 		map[string]any{"type": "Ready", "status": "True", "reason": "X", "observedGeneration": "not-a-number"},
 	}}
 
-	if _, err := conditionsFrom(cr); err == nil {
+	_, err := conditionsFrom(cr)
+	if err == nil {
 		t.Fatal("a condition with a wrong-typed field was accepted")
+	}
+	// The converter names the type it could not produce — observedGeneration's
+	// int64 — rather than the field. Asserting it keeps this test tied to the
+	// conversion failing, not to conditionsFrom erroring for any reason.
+	if !strings.Contains(err.Error(), "int64") {
+		t.Errorf("err = %q, want the int64 conversion to be what failed", err)
 	}
 }
 
@@ -468,7 +549,7 @@ func TestConditionsFrom_AbsentConditionsIsNotAnError(t *testing.T) {
 func TestSyncStatus_WrapsAMalformedExistingConditions(t *testing.T) {
 	cr := testCR()
 	cr.Object["status"] = map[string]any{"conditions": "not-a-list"}
-	live := helmReleaseWithCondition("db", "tenant-acme")
+	live := helmReleaseWithCondition("db-postgres", "tenant-acme")
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cr, live).Build()
 	r := testReconciler()
 	r.Client = c
@@ -488,7 +569,7 @@ func TestSyncStatus_NoHelmReleaseIsNotAnError(t *testing.T) {
 	r.Client = c
 
 	if err := r.syncStatus(t.Context(), testCR(), &helmv2.HelmRelease{
-		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "tenant-acme"},
+		ObjectMeta: metav1.ObjectMeta{Name: "db-postgres", Namespace: "tenant-acme"},
 	}); err != nil {
 		t.Fatalf("syncStatus: %v — the release may not exist yet, which is early rather than broken", err)
 	}
@@ -509,7 +590,7 @@ func TestSyncStatus_WrapsAReadFailure(t *testing.T) {
 	r.Client = c
 
 	err := r.syncStatus(t.Context(), testCR(), &helmv2.HelmRelease{
-		ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: "tenant-acme"},
+		ObjectMeta: metav1.ObjectMeta{Name: "db-postgres", Namespace: "tenant-acme"},
 	})
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want it to wrap the read failure", err)
@@ -528,7 +609,7 @@ func helmReleaseWithCondition(name, namespace string, conds ...metav1.Condition)
 
 func TestSyncStatus_DefaultsToPendingWhenNoReadyCondition(t *testing.T) {
 	cr := testCR()
-	live := helmReleaseWithCondition("db", "tenant-acme")
+	live := helmReleaseWithCondition("db-postgres", "tenant-acme")
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cr, live).Build()
 	r := testReconciler()
 	r.Client = c
@@ -554,7 +635,7 @@ func TestSyncStatus_DefaultsToPendingWhenNoReadyCondition(t *testing.T) {
 
 func TestSyncStatus_CopiesTheReadyCondition(t *testing.T) {
 	cr := testCR()
-	live := helmReleaseWithCondition("db", "tenant-acme", metav1.Condition{
+	live := helmReleaseWithCondition("db-postgres", "tenant-acme", metav1.Condition{
 		Type: "Ready", Status: metav1.ConditionTrue, Reason: "InstallSucceeded", Message: "release ready",
 	})
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cr, live).Build()
@@ -600,7 +681,7 @@ func TestSyncStatus_PreservesLastTransitionTimeWhenStatusIsUnchanged(t *testing.
 	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedReadyCondition(cr, string(metav1.ConditionTrue), "InstallSucceeded", old)
 
-	live := helmReleaseWithCondition("db", "tenant-acme", metav1.Condition{
+	live := helmReleaseWithCondition("db-postgres", "tenant-acme", metav1.Condition{
 		Type: "Ready", Status: metav1.ConditionTrue, Reason: "InstallSucceeded", Message: "release ready",
 	})
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cr, live).Build()
@@ -622,7 +703,7 @@ func TestSyncStatus_MovesLastTransitionTimeOnATransition(t *testing.T) {
 	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	seedReadyCondition(cr, string(metav1.ConditionUnknown), "Pending", old)
 
-	live := helmReleaseWithCondition("db", "tenant-acme", metav1.Condition{
+	live := helmReleaseWithCondition("db-postgres", "tenant-acme", metav1.Condition{
 		Type: "Ready", Status: metav1.ConditionTrue, Reason: "InstallSucceeded",
 	})
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cr, live).Build()
@@ -656,7 +737,7 @@ func readyCondition(t *testing.T, c client.Client) map[string]any {
 
 func TestSyncStatus_IgnoresANotFoundPatch(t *testing.T) {
 	cr := testCR()
-	live := helmReleaseWithCondition("db", "tenant-acme")
+	live := helmReleaseWithCondition("db-postgres", "tenant-acme")
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cr, live).
 		WithInterceptorFuncs(interceptor.Funcs{
 			SubResourcePatch: func(context.Context, client.Client, string, client.Object, client.Patch, ...client.SubResourcePatchOption) error {
@@ -673,12 +754,12 @@ func TestSyncStatus_IgnoresANotFoundPatch(t *testing.T) {
 
 func TestSyncStatus_PropagatesAStatusFromError(t *testing.T) {
 	cr := testCR()
-	live := helmReleaseWithCondition("db", "tenant-acme")
+	live := helmReleaseWithCondition("db-postgres", "tenant-acme")
 	cluster := &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{}}}
 	cluster.SetGroupVersionKind(clusterGVK)
 	cluster.SetNamespace("tenant-acme")
 	cluster.SetName("db")
-	cluster.SetLabels(map[string]string{LabelServiceName: "db", LabelServiceNamespace: "tenant-acme"})
+	cluster.SetLabels(map[string]string{LabelServiceName: "db-postgres", LabelServiceNamespace: "tenant-acme"})
 
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).
 		WithObjects(cr, live, cluster).Build()
@@ -690,14 +771,18 @@ func TestSyncStatus_PropagatesAStatusFromError(t *testing.T) {
 		JSONPath: "[",
 	}}
 
-	if err := r.syncStatus(t.Context(), cr, live); err == nil {
+	err := r.syncStatus(t.Context(), cr, live)
+	if err == nil {
 		t.Fatal("a malformed jsonPath in StatusFrom was accepted")
+	}
+	if !strings.Contains(err.Error(), "parse jsonPath") {
+		t.Errorf("err = %q, want the jsonPath parse to be what failed", err)
 	}
 }
 
 func TestSyncStatus_SkipsAnAbsentStatusFromValue(t *testing.T) {
 	cr := testCR()
-	live := helmReleaseWithCondition("db", "tenant-acme")
+	live := helmReleaseWithCondition("db-postgres", "tenant-acme")
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).
 		WithObjects(cr, live).Build()
 	r := testReconciler()
@@ -720,14 +805,14 @@ func TestSyncStatus_SkipsAnAbsentStatusFromValue(t *testing.T) {
 
 func TestSyncStatus_WritesAStatusFromField(t *testing.T) {
 	cr := testCR()
-	live := helmReleaseWithCondition("db", "tenant-acme")
+	live := helmReleaseWithCondition("db-postgres", "tenant-acme")
 	cluster := &unstructured.Unstructured{Object: map[string]any{
 		"status": map[string]any{"currentPrimary": "db-1"},
 	}}
 	cluster.SetGroupVersionKind(clusterGVK)
 	cluster.SetNamespace("tenant-acme")
 	cluster.SetName("db")
-	cluster.SetLabels(map[string]string{LabelServiceName: "db", LabelServiceNamespace: "tenant-acme"})
+	cluster.SetLabels(map[string]string{LabelServiceName: "db-postgres", LabelServiceNamespace: "tenant-acme"})
 
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cr, live, cluster).Build()
 	r := testReconciler()
@@ -752,7 +837,7 @@ func TestSyncStatus_WritesAStatusFromField(t *testing.T) {
 func TestSyncStatus_ReturnsAPatchFailure(t *testing.T) {
 	boom := errors.New("conflict")
 	cr := testCR()
-	live := helmReleaseWithCondition("db", "tenant-acme")
+	live := helmReleaseWithCondition("db-postgres", "tenant-acme")
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cr, live).
 		WithInterceptorFuncs(interceptor.Funcs{
 			SubResourcePatch: func(context.Context, client.Client, string, client.Object, client.Patch, ...client.SubResourcePatchOption) error {
@@ -789,7 +874,7 @@ func TestReadStatusFrom_ReadsTheLabelledObject(t *testing.T) {
 	cluster.SetNamespace("tenant-acme")
 	cluster.SetName("db")
 	cluster.SetLabels(map[string]string{
-		LabelServiceName:      "db",
+		LabelServiceName:      "db-postgres",
 		LabelServiceNamespace: "tenant-acme",
 	})
 
@@ -852,7 +937,7 @@ func TestReadStatusFrom_RejectsAMalformedJSONPath(t *testing.T) {
 	cluster.SetGroupVersionKind(clusterGVK)
 	cluster.SetNamespace("tenant-acme")
 	cluster.SetName("db")
-	cluster.SetLabels(map[string]string{LabelServiceName: "db", LabelServiceNamespace: "tenant-acme"})
+	cluster.SetLabels(map[string]string{LabelServiceName: "db-postgres", LabelServiceNamespace: "tenant-acme"})
 
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cluster).Build()
 	r := testReconciler()
@@ -874,7 +959,7 @@ func TestReadStatusFrom_ExecuteFailureIsNotAnError(t *testing.T) {
 	cluster.SetGroupVersionKind(clusterGVK)
 	cluster.SetNamespace("tenant-acme")
 	cluster.SetName("db")
-	cluster.SetLabels(map[string]string{LabelServiceName: "db", LabelServiceNamespace: "tenant-acme"})
+	cluster.SetLabels(map[string]string{LabelServiceName: "db-postgres", LabelServiceNamespace: "tenant-acme"})
 
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(postgresMarker()).WithObjects(cluster).Build()
 	r := testReconciler()

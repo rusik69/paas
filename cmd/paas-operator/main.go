@@ -43,6 +43,9 @@ func main() {
 	apiEndpoint := flag.String("api-endpoint-url", "",
 		"externally reachable API server URL for generated tenant kubeconfigs; "+
 			"empty disables kubeconfig generation")
+	// Release artifacts only. A catalog chart's schema is pulled with the
+	// transport the platform's own PackageSource declares, so that it cannot
+	// disagree with the HelmRepository a tenant's release resolves against.
 	insecureRegistry := flag.Bool("insecure-registry", true,
 		"pull release artifacts over plain HTTP; the in-cluster registry speaks it")
 	flag.Parse()
@@ -78,7 +81,7 @@ func run(installTimeout time.Duration, metricsAddress, apiEndpoint string, insec
 		MetricsAddress: metricsAddress,
 		APIEndpoint:    tenant.APIEndpoint{URL: apiEndpoint, CA: apiServerCA(cfg)},
 		Fetcher:        &platform.OCIFetcher{Insecure: insecureRegistry},
-		SchemaFetcher:  &chart.OCIFetcher{Insecure: insecureRegistry},
+		SchemaFetcher:  &chart.OCIFetcher{},
 	})
 	if err != nil {
 		return err

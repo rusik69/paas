@@ -27,26 +27,36 @@ const maxSchemaFile = 1 << 20
 // ErrNoSchema means the chart carries no values.schema.json.
 var ErrNoSchema = errors.New("chart contains no " + SchemaFile)
 
-// Fetcher resolves a chart reference into its values schema.
-type Fetcher interface {
-	Schema(ctx context.Context, registry, chart, version string) ([]byte, error)
-}
-
-// OCIFetcher reads the schema out of a chart in an OCI registry.
-type OCIFetcher struct {
-	// Insecure permits plain HTTP, which the in-cluster registry speaks.
+// Source is a registry and the transport it speaks.
+//
+// The two travel together because they are one fact: the schema pull here and
+// the HelmRepository a tenant's release resolves against must name the same
+// registry over the same transport, and a plain-HTTP registry pulled over TLS
+// fails in a way no test that does not pull a real chart can see. Passing them
+// as a pair leaves no place for a second, disagreeing transport to be
+// configured.
+type Source struct {
+	Registry string
 	Insecure bool
 }
 
+// Fetcher resolves a chart reference into its values schema.
+type Fetcher interface {
+	Schema(ctx context.Context, src Source, chart, version string) ([]byte, error)
+}
+
+// OCIFetcher reads the schema out of a chart in an OCI registry.
+type OCIFetcher struct{}
+
 // Schema pulls <registry>/<chart>:<version> and returns its values.schema.json.
-func (f *OCIFetcher) Schema(ctx context.Context, registry, chart, version string) ([]byte, error) {
-	repo := strings.TrimPrefix(registry, "oci://")
+func (*OCIFetcher) Schema(ctx context.Context, src Source, chart, version string) ([]byte, error) {
+	repo := strings.TrimPrefix(src.Registry, "oci://")
 	if repo == "" {
 		return nil, errors.New("registry is empty")
 	}
 
 	var opts []name.Option
-	if f.Insecure {
+	if src.Insecure {
 		opts = append(opts, name.Insecure)
 	}
 	ref, err := name.ParseReference(path.Join(repo, chart)+":"+version, opts...)

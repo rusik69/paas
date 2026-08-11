@@ -27,7 +27,10 @@ import (
 	"github.com/rusik69/paas/pkg/wait"
 )
 
-var postgresGVK = schema.GroupVersionKind{Group: serviceclass.Group, Version: serviceclass.Version, Kind: "Postgres"}
+var (
+	postgresGVK = schema.GroupVersionKind{Group: serviceclass.Group, Version: serviceclass.Version, Kind: "Postgres"}
+	redisGVK    = schema.GroupVersionKind{Group: serviceclass.Group, Version: serviceclass.Version, Kind: "Redis"}
+)
 
 // postgresClass mirrors the class the serviceclass package's own tests use, so
 // the CRD it generates and the Reconciler tested here agree on shape.
@@ -47,19 +50,36 @@ func postgresClass() *v1alpha1.ServiceClass {
 	}
 }
 
-// installPostgresCRD installs the CRD the generated Postgres kind is served
-// under, once for the whole suite, so tests can create real Postgres objects
-// against envtest's API server rather than a fake one.
+// redisClass is a second catalog entry, and exists only so one test can create
+// two generated kinds carrying the same CR name.
+func redisClass() *v1alpha1.ServiceClass {
+	return &v1alpha1.ServiceClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "redis"},
+		Spec: v1alpha1.ServiceClassSpec{
+			Kind:   "Redis",
+			Plural: "redises",
+			Chart:  v1alpha1.ChartRef{Name: "redis", Version: "0.1.0"},
+		},
+	}
+}
+
 func installPostgresCRD(t *testing.T) {
 	t.Helper()
+	installCRD(t, postgresClass())
+}
 
-	crd, err := serviceclass.CRDFor(postgresClass(), []byte(`{"type":"object","properties":{"instances":{"type":"integer"},"size":{"type":"string"}}}`))
+// installCRD installs the CRD a class generates, so tests can create real
+// objects of that kind against envtest's API server rather than a fake one.
+func installCRD(t *testing.T, class *v1alpha1.ServiceClass) {
+	t.Helper()
+
+	crd, err := serviceclass.CRDFor(class, []byte(`{"type":"object","properties":{"instances":{"type":"integer"},"size":{"type":"string"}}}`))
 	if err != nil {
-		t.Fatalf("build postgres crd: %v", err)
+		t.Fatalf("build %s crd: %v", class.Spec.Kind, err)
 	}
 	if err := k8sClient.Patch(t.Context(), crd, client.Apply,
 		client.FieldOwner("test"), client.ForceOwnership); err != nil {
-		t.Fatalf("apply postgres crd: %v", err)
+		t.Fatalf("apply %s crd: %v", class.Spec.Kind, err)
 	}
 
 	// Established on the CRD's own status is not the same thing as the client's
@@ -67,7 +87,7 @@ func installPostgresCRD(t *testing.T) {
 	// refreshed on a miss, so a Create right after Patch can still race it.
 	probe := func(ctx context.Context) (bool, error) {
 		var p unstructured.Unstructured
-		p.SetGroupVersionKind(postgresGVK)
+		p.SetGroupVersionKind(serviceclass.GVKFor(class))
 		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "___probe___"}, &p)
 		if apierrors.IsNotFound(err) {
 			return true, nil
@@ -77,8 +97,8 @@ func installPostgresCRD(t *testing.T) {
 		}
 		return false, err
 	}
-	if err := wait.For(t.Context(), 50*time.Millisecond, "postgres kind being served", probe); err != nil {
-		t.Fatalf("wait for postgres kind: %v", err)
+	if err := wait.For(t.Context(), 50*time.Millisecond, class.Spec.Kind+" kind being served", probe); err != nil {
+		t.Fatalf("wait for %s kind: %v", class.Spec.Kind, err)
 	}
 }
 
@@ -87,7 +107,7 @@ func serviceReconciler(t *testing.T, class *v1alpha1.ServiceClass) *service.Reco
 	return &service.Reconciler{
 		Client:   k8sClient,
 		Scheme:   scheme,
-		GVK:      postgresGVK,
+		GVK:      serviceclass.GVKFor(class),
 		Class:    class,
 		Registry: "oci://registry.paas-system.svc.cluster.local:5000/paas/charts",
 		// The in-cluster registry speaks plain HTTP — see
@@ -99,15 +119,20 @@ func serviceReconciler(t *testing.T, class *v1alpha1.ServiceClass) *service.Reco
 
 func newPostgres(t *testing.T, ns, name string) *unstructured.Unstructured {
 	t.Helper()
+	return newObject(t, postgresGVK, ns, name)
+}
+
+func newObject(t *testing.T, gvk schema.GroupVersionKind, ns, name string) *unstructured.Unstructured {
+	t.Helper()
 
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"spec": map[string]any{"instances": int64(1), "size": "1Gi"},
 	}}
-	u.SetGroupVersionKind(postgresGVK)
+	u.SetGroupVersionKind(gvk)
 	u.SetNamespace(ns)
 	u.SetName(name)
 	if err := k8sClient.Create(t.Context(), u); err != nil {
-		t.Fatalf("create postgres %s/%s: %v", ns, name, err)
+		t.Fatalf("create %s %s/%s: %v", gvk.Kind, ns, name, err)
 	}
 	t.Cleanup(func() {
 		_ = k8sClient.Delete(t.Context(), u)
@@ -137,7 +162,7 @@ func TestService_RendersARepositoryAndReleaseAgainstARealAPIServer(t *testing.T)
 	}
 
 	var hr helmv2.HelmRelease
-	hrKey := types.NamespacedName{Namespace: "tenant-service", Name: "db"}
+	hrKey := types.NamespacedName{Namespace: "tenant-service", Name: "db-postgres"}
 	if err := k8sClient.Get(t.Context(), hrKey, &hr); err != nil {
 		t.Fatalf("get helmrelease: %v", err)
 	}
@@ -168,6 +193,46 @@ func TestService_RendersARepositoryAndReleaseAgainstARealAPIServer(t *testing.T)
 	}
 }
 
+// Two generated kinds, one CR name, one namespace — the shape that used to
+// destroy a tenant's data. Both CRs rendered the same HelmRelease: the API
+// server refuses a second controller owner reference on it, and helm-controller
+// upgrades the release to whichever chart wrote last, deleting the other kind's
+// underlying object and its PVCs with it.
+//
+// Against a real API server rather than in desired() alone, because the owner
+// reference is the half a fake client will happily accept.
+func TestService_TwoKindsWithOneCRNameGetTheirOwnReleases(t *testing.T) {
+	installPostgresCRD(t)
+	installCRD(t, redisClass())
+	ensureNamespace(t, "tenant-service")
+
+	const name = "cache"
+	newObject(t, postgresGVK, "tenant-service", name)
+	newObject(t, redisGVK, "tenant-service", name)
+
+	reconcileIn(t, "tenant-service", name, serviceReconciler(t, postgresClass()))
+	reconcileIn(t, "tenant-service", name, serviceReconciler(t, redisClass()))
+
+	for _, tc := range []struct{ release, kind string }{
+		{name + "-postgres", "Postgres"},
+		{name + "-redis", "Redis"},
+	} {
+		var hr helmv2.HelmRelease
+		key := types.NamespacedName{Namespace: "tenant-service", Name: tc.release}
+		if err := k8sClient.Get(t.Context(), key, &hr); err != nil {
+			t.Fatalf("get helmrelease %s: %v", tc.release, err)
+		}
+		if len(hr.OwnerReferences) != 1 || hr.OwnerReferences[0].Kind != tc.kind {
+			t.Errorf("%s ownerReferences = %+v, want one naming the %s that asked for it",
+				tc.release, hr.OwnerReferences, tc.kind)
+		}
+		if hr.Labels[service.LabelServiceName] != tc.release {
+			t.Errorf("%s labelled %s=%q, want the release name — a status watch maps back by it",
+				tc.release, service.LabelServiceName, hr.Labels[service.LabelServiceName])
+		}
+	}
+}
+
 // The level-triggered claim: a later spec change is picked up on the next
 // reconcile rather than only on the first.
 func TestService_FollowsASpecChange(t *testing.T) {
@@ -190,7 +255,7 @@ func TestService_FollowsASpecChange(t *testing.T) {
 	reconcileIn(t, "tenant-service", "grow", reconciler)
 
 	var hr helmv2.HelmRelease
-	if err := k8sClient.Get(t.Context(), types.NamespacedName{Namespace: "tenant-service", Name: "grow"}, &hr); err != nil {
+	if err := k8sClient.Get(t.Context(), types.NamespacedName{Namespace: "tenant-service", Name: "grow-postgres"}, &hr); err != nil {
 		t.Fatalf("get helmrelease: %v", err)
 	}
 	if !strings.Contains(string(hr.Spec.Values.Raw), `"instances":3`) {
@@ -207,7 +272,7 @@ func TestService_SyncsReadyFromARealHelmRelease(t *testing.T) {
 	reconcileIn(t, "tenant-service", "ready", reconciler)
 
 	var hr helmv2.HelmRelease
-	key := types.NamespacedName{Namespace: "tenant-service", Name: "ready"}
+	key := types.NamespacedName{Namespace: "tenant-service", Name: "ready-postgres"}
 	if err := k8sClient.Get(t.Context(), key, &hr); err != nil {
 		t.Fatalf("get helmrelease: %v", err)
 	}
@@ -354,7 +419,7 @@ func TestServiceSetupWithManager_StartAfterStopSucceeds(t *testing.T) {
 		t.Fatalf("first SetupWithManager: %v", err)
 	}
 	newPostgres(t, "tenant-service", "restart-one")
-	waitForHelmRelease(t, "tenant-service", "restart-one")
+	waitForHelmRelease(t, "tenant-service", "restart-one-postgres")
 
 	cancel1() // simulate the engine's Stop for this kind
 	select {
@@ -369,6 +434,6 @@ func TestServiceSetupWithManager_StartAfterStopSucceeds(t *testing.T) {
 		t.Fatalf("second SetupWithManager after stop: %v", err)
 	}
 	newPostgres(t, "tenant-service", "restart-two")
-	waitForHelmRelease(t, "tenant-service", "restart-two")
+	waitForHelmRelease(t, "tenant-service", "restart-two-postgres")
 }
 

@@ -11,6 +11,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/cache/informertest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 var testGVK = schema.GroupVersionKind{Group: "apps.paas.io", Version: "v1alpha1", Kind: "Postgres"}
@@ -438,9 +439,24 @@ func TestEngine_RunningDoesNotBlockBehindAnotherGVKsStop(t *testing.T) {
 	}
 }
 
+// recordingCache is the manager's cache with the one method removeFromCache
+// calls recorded. informertest.FakeInformers alone proves nothing here: its
+// RemoveInformer returns nil whatever it is handed, so a Stop that removed the
+// wrong kind — or nothing at all — would pass.
+type recordingCache struct {
+	*informertest.FakeInformers
+	removed []schema.GroupVersionKind
+}
+
+func (c *recordingCache) RemoveInformer(_ context.Context, obj client.Object) error {
+	c.removed = append(c.removed, obj.GetObjectKind().GroupVersionKind())
+	return nil
+}
+
 func TestEngine_StopUsesManagerCacheByDefault(t *testing.T) {
+	cache := &recordingCache{FakeInformers: &informertest.FakeInformers{}}
 	e := &Engine{
-		Manager: &fakeManager{cache: &informertest.FakeInformers{}},
+		Manager: &fakeManager{cache: cache},
 		Build:   func(context.Context, schema.GroupVersionKind, func()) error { return nil },
 	}
 
@@ -449,5 +465,121 @@ func TestEngine_StopUsesManagerCacheByDefault(t *testing.T) {
 	}
 	if err := e.Stop(t.Context(), testGVK); err != nil {
 		t.Errorf("Stop: %v", err)
+	}
+
+	if !slices.Equal(cache.removed, []schema.GroupVersionKind{testGVK}) {
+		t.Errorf("removed %v from the manager's cache, want exactly [%v]", cache.removed, testGVK)
+	}
+}
+
+// A controller that stopped on its own leaves its informer in the shared
+// cache: nothing cancelled it, so nothing removed it. Stop returning early on
+// the missing cancel — as it once did — left that informer watching a resource
+// the class had already dropped.
+func TestEngine_StopRemovesTheInformerOfASelfStoppedKind(t *testing.T) {
+	cache := &recordingCache{FakeInformers: &informertest.FakeInformers{}}
+	var done func()
+	e := &Engine{
+		Manager: &fakeManager{cache: cache},
+		Build: func(_ context.Context, _ schema.GroupVersionKind, d func()) error {
+			done = d
+			return nil
+		},
+	}
+
+	if err := e.Start(t.Context(), testGVK); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	done() // a cache-sync timeout, say: nobody called Stop
+	if err := e.Stop(t.Context(), testGVK); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if !slices.Equal(cache.removed, []schema.GroupVersionKind{testGVK}) {
+		t.Errorf("removed %v, want the self-stopped kind's informer gone too", cache.removed)
+	}
+}
+
+// A kind nothing ever started has no informer to remove, and reaching the
+// manager's cache for one would be a nil dereference in exactly the case Stop
+// documents as harmless.
+func TestEngine_StopNeverStartedRemovesNoInformer(t *testing.T) {
+	cache := &recordingCache{FakeInformers: &informertest.FakeInformers{}}
+	e := &Engine{
+		Manager: &fakeManager{cache: cache},
+		Build:   func(context.Context, schema.GroupVersionKind, func()) error { return nil },
+	}
+
+	if err := e.Stop(t.Context(), testGVK); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if len(cache.removed) != 0 {
+		t.Errorf("removed %v, want nothing for a kind that was never started", cache.removed)
+	}
+}
+
+// The freed slot has to be acted on by something. The engine cannot start the
+// kind again itself — the class it would have to read lives in a package that
+// imports this one — so it reports the death, and a kind that stopped without
+// anyone asking stays dead if this does not fire.
+func TestEngine_StoppedFiresWhenAControllerDiesOnItsOwn(t *testing.T) {
+	var done func()
+	var got []schema.GroupVersionKind
+	var live bool
+
+	e := &Engine{
+		Build: func(_ context.Context, _ schema.GroupVersionKind, d func()) error {
+			done = d
+			return nil
+		},
+		Stopped: func(ctx context.Context, gvk schema.GroupVersionKind) {
+			got = append(got, gvk)
+			live = ctx.Err() == nil
+		},
+	}
+
+	if err := e.Start(t.Context(), testGVK); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	done()
+
+	if !slices.Equal(got, []schema.GroupVersionKind{testGVK}) {
+		t.Errorf("Stopped saw %v, want [%v]", got, testGVK)
+	}
+	if !live {
+		t.Error("Stopped was handed an already-cancelled context; anything it tried to wake would give up immediately")
+	}
+}
+
+// A done that lost its generation belongs to a controller two Starts ago. It
+// clears nothing, so it must report nothing either — waking the class over a
+// controller that is running would be noise on every class update.
+func TestEngine_StoppedDoesNotFireForAStaleDone(t *testing.T) {
+	var dones []func()
+	var got []schema.GroupVersionKind
+
+	e := &Engine{
+		Build: func(_ context.Context, _ schema.GroupVersionKind, d func()) error {
+			dones = append(dones, d)
+			return nil
+		},
+		removeInformer: func(context.Context, schema.GroupVersionKind) error { return nil },
+		Stopped:        func(_ context.Context, gvk schema.GroupVersionKind) { got = append(got, gvk) },
+	}
+
+	if err := e.Start(t.Context(), testGVK); err != nil {
+		t.Fatalf("Start (1st): %v", err)
+	}
+	if err := e.Stop(t.Context(), testGVK); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := e.Start(t.Context(), testGVK); err != nil {
+		t.Fatalf("Start (2nd): %v", err)
+	}
+
+	dones[0]()
+
+	if len(got) != 0 {
+		t.Errorf("Stopped fired %v for a controller that had already been replaced", got)
 	}
 }

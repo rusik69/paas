@@ -103,10 +103,12 @@ Reconciling it produces:
 - `ResourceQuota` + `LimitRange` derived from `spec.plan`.
 - `CiliumNetworkPolicy`: **default-deny** across namespaces, plus no pod→apiserver and no
   pod→tenant-etcd. Opt in per workload with explicit labels
-  (`policy.paas.io/allow-to-apiserver: "true"`). One namespace is allowed in unconditionally:
-  ingress from `paas-system`, because the platform's operators run there and manage the
-  managed-service instances they provision inside tenant namespaces. Ingress only; tenants
-  still cannot dial into `paas-system`.
+  (`policy.paas.io/allow-to-apiserver: "true"`). One further allowance, in its own policy:
+  ingress from `paas-system` to the pods a catalog chart created — selected by the
+  chart-contract label `paas.io/service-name`, which every managed instance carries — because
+  the platform's operators run there and manage the instances they provision inside tenant
+  namespaces. Ingress only; tenants still cannot dial into `paas-system`, and a tenant's own
+  workloads are not reachable from it.
 - A Flux `Kustomization` + `HelmRepository` scoped to the namespace, **sharded** by a hash of
   the tenant name across N helm-controller replicas. A single Flux shard is the known
   scaling bottleneck in this architecture; shard from day one.

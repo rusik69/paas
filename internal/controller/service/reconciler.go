@@ -36,10 +36,20 @@ const FieldManager = "paas-operator/service"
 
 // Labels every chart in the catalog stamps on everything it creates, so a
 // status watch on an underlying kind maps back to the CR that asked for it.
+//
+// LabelServiceName carries the release name — {{ .Release.Name }} to a chart —
+// which is the CR's name plus its kind, not the CR's name alone. See
+// Reconciler.releaseName.
 const (
 	LabelServiceName      = "paas.io/service-name"
 	LabelServiceNamespace = "paas.io/service-namespace"
 )
+
+// MaxReleaseName is Helm's own limit on a release name, which helm-controller
+// repeats on spec.releaseName. Nothing sets that field, so the derived
+// HelmRelease's object name is the release name and has to fit inside it — as
+// does the kind suffix releaseName appends.
+const MaxReleaseName = 53
 
 // ReleaseInterval matches the platform reconciler's.
 const ReleaseInterval = 10 * time.Minute
@@ -68,12 +78,10 @@ type Reconciler struct {
 	Class  *v1alpha1.ServiceClass
 	// Registry is the OCI URL every chart in the catalog is pulled from.
 	Registry string
-	// Insecure must mirror whatever the platform's own registry access uses —
-	// see Platform.Spec.Registry and platform.Reconciler.applySource, which
-	// sets it from the same in-cluster-registry-speaks-plain-HTTP fact. There
-	// is deliberately no default here: whoever builds a Reconciler (the
-	// engine's Builder) must set it explicitly from that one source of truth,
-	// so a future TLS registry has an obvious place to turn it off.
+	// Insecure is the transport that registry speaks. Both fields come from
+	// serviceclass.SourceFrom, which reads the platform's own PackageSource —
+	// the same pair the catalog's chart schemas are pulled with, so the
+	// HelmRepository rendered here cannot disagree with them.
 	Insecure bool
 }
 
@@ -94,19 +102,13 @@ type Reconciler struct {
 func (r *Reconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, done func()) error {
 	ctrl.LoggerFrom(ctx).Info("registering service controller", "kind", r.GVK.Kind)
 
-	// The only ways NewUnmanaged can fail are a nil Reconciler, an empty
-	// name, or a name collision — none reachable here: r is never nil (it is
-	// the receiver), the name always carries the "service-" prefix, and
-	// controllerOptions sets SkipNameValidation. That last one is load-bearing
-	// for this discarded error, not just for reuse across Stop and Start: if
-	// SkipNameValidation is ever turned off, c is nil on a collision and the
-	// first Watch below panics.
+	// Discarded because controllerOptions sets SkipNameValidation, which leaves
+	// no reachable failure. Turning that off would make c nil on a name
+	// collision and panic in the first Watch below.
 	c, _ := controller.NewUnmanaged("service-"+r.Class.Name, r.controllerOptions(mgr))
 
 	cr := &unstructured.Unstructured{}
 	cr.SetGroupVersionKind(r.GVK)
-	// Watch, called before Start, only records the source for Start to pick
-	// up later and cannot itself fail.
 	_ = c.Watch(source.Kind(mgr.GetCache(), client.Object(cr), &handler.EnqueueRequestForObject{}))
 	_ = c.Watch(source.Kind(mgr.GetCache(), client.Object(&helmv2.HelmRelease{}),
 		handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(), cr, handler.OnlyControllerOwner())))
@@ -114,7 +116,7 @@ func (r *Reconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, don
 		src := &unstructured.Unstructured{}
 		src.SetAPIVersion(s.From.APIVersion)
 		src.SetKind(s.From.Kind)
-		_ = c.Watch(source.Kind(mgr.GetCache(), client.Object(src), handler.EnqueueRequestsFromMapFunc(byServiceLabels)))
+		_ = c.Watch(source.Kind(mgr.GetCache(), client.Object(src), handler.EnqueueRequestsFromMapFunc(r.byServiceLabels)))
 	}
 
 	go func() {
@@ -148,13 +150,42 @@ func (r *Reconciler) controllerOptions(mgr ctrl.Manager) controller.Options {
 
 // byServiceLabels maps an underlying object back to the CR whose status it
 // belongs in, using the labels the chart contract requires.
-func byServiceLabels(_ context.Context, obj client.Object) []ctrl.Request {
+//
+// The label carries the release name, so the kind suffix comes back off to get
+// the CR's own name. An object whose label does not carry this kind's suffix
+// belongs to a different generated kind and is not this controller's to
+// enqueue.
+func (r *Reconciler) byServiceLabels(_ context.Context, obj client.Object) []ctrl.Request {
 	l := obj.GetLabels()
-	name, ns := l[LabelServiceName], l[LabelServiceNamespace]
-	if name == "" || ns == "" {
+	release, ns := l[LabelServiceName], l[LabelServiceNamespace]
+	suffix := r.nameSuffix()
+	if ns == "" || !strings.HasSuffix(release, suffix) {
+		return nil
+	}
+	name := strings.TrimSuffix(release, suffix)
+	if name == "" {
 		return nil
 	}
 	return []ctrl.Request{{NamespacedName: client.ObjectKey{Name: name, Namespace: ns}}}
+}
+
+// releaseName is the derived HelmRelease's name, and so the Helm release name
+// every chart sees as {{ .Release.Name }} and stamps into the chart-contract
+// labels.
+//
+// The CR's name alone is not enough. Two generated kinds can carry the same CR
+// name in one namespace, and both would render that one HelmRelease: the API
+// server refuses the second controller owner reference, and helm-controller,
+// watching the chart name flip between reconciles, upgrades the release to the
+// other chart — which deletes the first kind's underlying object and, with it,
+// every PVC owner-referenced to it. A tenant loses a database by naming a
+// cache after it.
+func (r *Reconciler) releaseName(cr *unstructured.Unstructured) string {
+	return cr.GetName() + r.nameSuffix()
+}
+
+func (r *Reconciler) nameSuffix() string {
+	return "-" + strings.ToLower(r.GVK.Kind)
 }
 
 // Reconcile renders the derived HelmRelease and copies status back.
@@ -210,20 +241,22 @@ func (r *Reconciler) desired(cr *unstructured.Unstructured) (*helmv2.HelmRelease
 	if !found {
 		values = map[string]any{}
 	}
-	// json.Marshal cannot fail here: everything in cr.Object was itself
-	// produced by decoding JSON (from the API server, or from a test literal
-	// built the same shapes), and JSON's grammar has no NaN or Inf — the only
-	// values a plain map like this could contain that Marshal would reject.
 	raw, _ := json.Marshal(values)
+
+	name := r.releaseName(cr)
+	if len(name) > MaxReleaseName {
+		return nil, fmt.Errorf("release name %q for %s/%s exceeds Helm's %d-character limit; name the %s at most %d characters",
+			name, cr.GetNamespace(), cr.GetName(), MaxReleaseName, r.GVK.Kind, MaxReleaseName-len(r.nameSuffix()))
+	}
 
 	yes := true
 	return &helmv2.HelmRelease{
 		TypeMeta: metav1.TypeMeta{APIVersion: helmv2.GroupVersion.String(), Kind: helmv2.HelmReleaseKind},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.GetName(),
+			Name:      name,
 			Namespace: cr.GetNamespace(),
 			Labels: map[string]string{
-				LabelServiceName:      cr.GetName(),
+				LabelServiceName:      name,
 				LabelServiceNamespace: cr.GetNamespace(),
 			},
 			OwnerReferences: []metav1.OwnerReference{{
@@ -298,9 +331,6 @@ func (r *Reconciler) syncStatus(ctx context.Context, cr *unstructured.Unstructur
 
 	patch := cr.DeepCopy()
 	_ = unstructured.SetNestedField(patch.Object, cr.GetGeneration(), "status", "observedGeneration")
-	// ToUnstructured cannot fail on a metav1.Condition: every field is a
-	// string, an int64 or a Time, none of which the converter's JSON-based
-	// round trip rejects.
 	condsOut := make([]any, 0, len(conditions))
 	for _, c := range conditions {
 		m, _ := runtime.DefaultUnstructuredConverter.ToUnstructured(&c)
@@ -368,7 +398,7 @@ func (r *Reconciler) readStatusFrom(ctx context.Context, cr *unstructured.Unstru
 	if err := r.List(ctx, list,
 		client.InNamespace(cr.GetNamespace()),
 		client.MatchingLabels{
-			LabelServiceName:      cr.GetName(),
+			LabelServiceName:      r.releaseName(cr),
 			LabelServiceNamespace: cr.GetNamespace(),
 		},
 	); err != nil {

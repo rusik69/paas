@@ -16,6 +16,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -80,7 +81,17 @@ func NewManager(cfg *rest.Config, opts Options) (manager.Manager, error) {
 
 	// Built before the table, because the ServiceClass reconciler holds it and
 	// its Builder needs the manager the table is registering against.
-	eng := &engine.Engine{Manager: mgr, Build: serviceclass.BuilderFor(mgr)}
+	//
+	// wake closes the loop the engine cannot close itself: a generated kind's
+	// controller stopping — including on its own, which nothing asked for —
+	// frees its slot, and this carries the owning ServiceClass back into
+	// reconcile so something actually starts it again.
+	wake := make(chan event.GenericEvent)
+	eng := &engine.Engine{
+		Manager: mgr,
+		Build:   serviceclass.BuilderFor(mgr),
+		Stopped: serviceclass.WakeOnStop(mgr.GetClient(), wake),
+	}
 
 	// Table rather than three near-identical blocks: one error path to get
 	// right, and the reconciler's name in the message comes from the same place
@@ -98,7 +109,7 @@ func NewManager(cfg *rest.Config, opts Options) (manager.Manager, error) {
 			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Endpoint: opts.APIEndpoint,
 		}).SetupWithManager},
 		{"serviceclass", (&serviceclass.Reconciler{
-			Client: mgr.GetClient(), Fetcher: opts.SchemaFetcher, Engine: eng,
+			Client: mgr.GetClient(), Fetcher: opts.SchemaFetcher, Engine: eng, Wake: wake,
 		}).SetupWithManager},
 	}
 	for _, s := range setups {

@@ -4,6 +4,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	pkgctl "github.com/rusik69/paas/internal/controller/pkg"
+	"github.com/rusik69/paas/internal/controller/service"
 )
 
 // Cilium's policy API, referenced rather than imported: CiliumNetworkPolicy is
@@ -12,15 +13,20 @@ import (
 const (
 	policyAPIVersion = "cilium.io/v2"
 	policyKind       = "CiliumNetworkPolicy"
+	// k8sLabelPrefix is the label source Cilium files a Kubernetes label under.
+	k8sLabelPrefix = "k8s:"
 )
 
-// Policy names. Two objects rather than one, so the opt-in can be reasoned
-// about — and revoked — without touching the deny.
+// Policy names. One object per allowance rather than one object total, so each
+// can be reasoned about — and revoked — without touching the deny.
 const (
 	// PolicyDefaultDeny confines a tenant to its own namespace.
 	PolicyDefaultDeny = "default-deny"
 	// PolicyAllowAPIServer grants labelled pods access to the API server.
 	PolicyAllowAPIServer = "allow-to-apiserver"
+	// PolicyAllowPlatform lets the platform's operators reach the instances
+	// they provision.
+	PolicyAllowPlatform = "allow-from-platform"
 )
 
 // AllowAPIServerLabel opts a single pod into API server access.
@@ -30,13 +36,13 @@ const (
 const AllowAPIServerLabel = "policy.paas.io/allow-to-apiserver"
 
 // defaultDenyPolicy confines every pod in the namespace to its own namespace,
-// plus cluster DNS and ingress from the platform namespace.
+// plus cluster DNS.
 //
 // Deny-by-default is a property of Cilium selecting the endpoint at all: once a
 // policy matches, everything not explicitly allowed is dropped. So the rules
-// below are the entire allow-list — same-namespace traffic, the platform's
-// operators, and DNS — and cross-tenant traffic and the API server are denied
-// by their absence rather than by a deny rule.
+// below are the entire allow-list — same-namespace traffic and DNS — and
+// cross-tenant traffic, the platform namespace and the API server are denied by
+// their absence rather than by a deny rule.
 func defaultDenyPolicy(namespace, tenant string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": policyAPIVersion,
@@ -54,20 +60,6 @@ func defaultDenyPolicy(namespace, tenant string) *unstructured.Unstructured {
 				// Cilium, which is exactly the boundary a tenant is.
 				map[string]any{
 					"fromEndpoints": []any{map[string]any{}},
-				},
-				// The platform's operators run in paas-system and manage the
-				// workloads they provision for tenants: CNPG polls each Postgres
-				// instance's status endpoint in the tenant's own namespace, and
-				// every managed service added later needs the same reach. Without
-				// this the operator's probes time out and the service never
-				// becomes ready. Ingress only — nothing has needed a tenant pod to
-				// dial into paas-system, and this stays the narrower half.
-				map[string]any{
-					"fromEndpoints": []any{map[string]any{
-						"matchLabels": map[string]any{
-							"k8s:io.kubernetes.pod.namespace": pkgctl.TargetNamespace,
-						},
-					}},
 				},
 			},
 			"egress": []any{
@@ -123,10 +115,62 @@ func allowAPIServerPolicy(namespace, tenant string) *unstructured.Unstructured {
 	}}
 }
 
+// allowPlatformPolicy lets the platform namespace reach the workloads it
+// provisions inside this tenant's namespace.
+//
+// The platform's operators manage the instances a tenant asks for — CNPG polls
+// each Postgres instance's status endpoint in the tenant's own namespace, and
+// every managed service added later needs the same reach. No per-pod opt-in can
+// express it: the source is the operator's namespace, not anything the tenant
+// runs.
+//
+// Narrowed to the endpoints that are a managed instance, by the chart-contract
+// label every catalog chart already stamps on everything it creates (see
+// service.LabelServiceName, and CNPG's inheritedMetadata in
+// packages/apps/postgres). A tenant's own pods carry no such label and stay
+// unreachable from paas-system, which is what the allowance should have said
+// all along.
+//
+// Ingress only: nothing has needed a tenant pod to dial into paas-system, and
+// its own object rather than a rule inside the deny, so revoking it is deleting
+// one policy.
+func allowPlatformPolicy(namespace, tenant string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": policyAPIVersion,
+		"kind":       policyKind,
+		"metadata": map[string]any{
+			"name":      PolicyAllowPlatform,
+			"namespace": namespace,
+			"labels":    map[string]any{TenantLabel: tenant},
+		},
+		"spec": map[string]any{
+			"endpointSelector": map[string]any{
+				// Explicitly source-prefixed, as the namespace selectors here
+				// are. Cilium normalises a bare key in matchLabels to the "any"
+				// source; whether it does the same inside matchExpressions is
+				// not something to find out from a policy that silently selects
+				// nothing.
+				"matchExpressions": []any{map[string]any{
+					"key":      k8sLabelPrefix + service.LabelServiceName,
+					"operator": "Exists",
+				}},
+			},
+			"ingress": []any{map[string]any{
+				"fromEndpoints": []any{map[string]any{
+					"matchLabels": map[string]any{
+						"k8s:io.kubernetes.pod.namespace": pkgctl.TargetNamespace,
+					},
+				}},
+			}},
+		},
+	}}
+}
+
 // policiesFor returns every policy backing one tenant namespace.
 func policiesFor(namespace, tenant string) []*unstructured.Unstructured {
 	return []*unstructured.Unstructured{
 		defaultDenyPolicy(namespace, tenant),
 		allowAPIServerPolicy(namespace, tenant),
+		allowPlatformPolicy(namespace, tenant),
 	}
 }
