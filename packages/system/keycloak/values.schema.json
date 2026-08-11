@@ -18,7 +18,6 @@
       "additionalProperties": false,
       "properties": {
         "host": {"type": "string"},
-        "nodePort": {"type": "integer"},
         "port": {"type": "integer"},
         "realm": {"type": "string"},
         "clientId": {"type": "string"},

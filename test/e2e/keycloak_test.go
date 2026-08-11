@@ -24,7 +24,7 @@ import (
 // derived these from the thing under test could not catch the two disagreeing,
 // which is the failure mode that produces no error anywhere.
 const (
-	oidcIssuerHost   = "https://10.77.0.11:31443"
+	oidcIssuerHost   = "https://10.77.0.11:8443"
 	oidcIssuerURL    = oidcIssuerHost + "/realms/paas"
 	oidcClientID     = "kubernetes"
 	oidcTestUser     = "alice"
@@ -185,9 +185,9 @@ func TestKeycloak_TokenAuthenticatesAndMapsToTheTenantRole(t *testing.T) {
 // keycloakToken fetches an access token by password grant, from inside the
 // cluster, and hands it back through a ConfigMap.
 //
-// In-cluster because the issuer's pinned ClusterIP is reachable from cluster
-// nodes and from the host only through Cilium's socket load balancer — a curl
-// from the test process is not guaranteed either.
+// In-cluster because that is where the issuer is reachable: it binds the
+// control-plane node's host network, which pods route to and a developer's
+// laptop does not.
 func keycloakToken(t *testing.T) string {
 	t.Helper()
 

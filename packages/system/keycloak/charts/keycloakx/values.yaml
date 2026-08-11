@@ -31,6 +31,12 @@ hostAliases: []
 #   hostnames:
 #     - "my.host.com"
 
+# PAAS PATCH: run in the host network namespace, binding Keycloak's ports on the
+# node itself. Upstream has no such option. See packages/system/keycloak/values.yaml
+# for why the platform needs it; re-apply this and the statefulset.yaml block on a
+# chart upgrade.
+hostNetwork: false
+
 # Indicates whether information about services should be injected into Pod's environment variables, matching the syntax of Docker links
 enableServiceLinks: true
 

@@ -46,15 +46,18 @@ NODES=(
 CONTROLPLANE_IP="10.77.0.11"
 CLUSTER_ENDPOINT="https://${CONTROLPLANE_IP}:6443"
 
-# Keycloak's pinned ClusterIP, and the issuer built from it.
+# Where Keycloak listens, and the issuer built from it. It runs on the control
+# plane's host network, so this is the node's own address and Keycloak's own
+# port — no Service in the path.
 #
 # An IP rather than a Service DNS name because the API server runs in the host
-# network namespace and does not use cluster DNS — it cannot resolve
-# keycloak.paas-system.svc at all. A node address needs no service translation,
-# which a ClusterIP turned out to need and not get: the API server refused one
-# with EPERM even with the Service's endpoints healthy.
-OIDC_HOST="${OIDC_HOST:-10.77.0.11}"
-OIDC_PORT="${OIDC_PORT:-31443}"
+# network namespace and does not use cluster DNS: it cannot resolve
+# keycloak.paas-system.svc at all. Not a Service address either, of any type: a
+# pinned ClusterIP and a NodePort were both refused with EPERM, with healthy
+# endpoints, because the kube-apiserver static pod does not get Cilium's socket
+# load balancing. A host-network listener needs no translation to fail to get.
+OIDC_HOST="${OIDC_HOST:-${CONTROLPLANE_IP}}"
+OIDC_PORT="${OIDC_PORT:-8443}"
 OIDC_ISSUER_URL="${OIDC_ISSUER_URL:-https://${OIDC_HOST}:${OIDC_PORT}/realms/paas}"
 OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-kubernetes}"
 

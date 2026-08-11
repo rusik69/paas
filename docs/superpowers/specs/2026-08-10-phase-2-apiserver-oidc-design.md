@@ -106,16 +106,38 @@ the issuer between service types were looking in the wrong place.
 
 **The remaining approach is to avoid service translation altogether**: run Keycloak with
 `hostNetwork: true`, pinned to the control-plane node, binding the issuer port directly. That is
-now the measured recommendation rather than a guess: a host-network pod on that node is exactly
-what was just shown to be reachable, and the API server would be dialling a real listener on the
-node's own address with no Service, no frontend and nothing to translate, and in-cluster clients can
+the measured recommendation rather than a guess: a host-network pod on that node is exactly
+what was just shown to be reachable, and the API server dials a real listener on the
+node's own address with no Service, no frontend and nothing to translate, while in-cluster clients
 reach the same address because a node IP is routable from pods. The certificate SAN, the issuer
 URL and `KC_HOSTNAME` all become that node address, and `hack/e2e.sh` already regenerates the
 certificate when that address changes.
 
-Worth checking first, as it may be cheaper: whether a Cilium setting (`socketLB`,
-`bpf-lb-sock-hostns-only` and neighbours) is what excludes the static pod. If one does, a values
-change beats moving Keycloak onto the host network.
+### The host-network issuer (built 2026-08-11)
+
+Keycloak binds `10.77.0.11:8443` on the control-plane node's own network namespace. No Service
+of any kind is in the path: the extra `keycloak-oidc` Service is gone, and `OIDC_PORT` is
+Keycloak's own HTTPS port rather than a NodePort.
+
+Three details this rests on:
+
+- **The vendored chart had no `hostNetwork` option**, so it carries a four-line patch —
+  `hostNetwork` plus `dnsPolicy: ClusterFirstWithHostNet`, marked `PAAS PATCH` in its
+  `values.yaml`. The DNS policy is not optional: Keycloak resolves `keycloak-db-rw` through
+  cluster DNS, which a host-network pod does not get by default, and without it the pod would
+  fail at the database rather than at the issuer.
+- **The control plane, not a worker.** The storage suite powers a worker off to prove DRBD
+  failover, and pinning the cluster's authentication source to a node the tests destroy would
+  make every later test's failure mode depend on ordering. The LINSTOR controller is pinned
+  there for the same reason.
+- **Scheduling on the control plane is off** (`allowSchedulingOnControlPlanes: false`), so this
+  needs the `node-role.kubernetes.io/control-plane:NoSchedule` toleration alongside the
+  nodeSelector. Piraeus already carries the same pair.
+
+The Cilium-settings check the previous round suggested (`socketLB`, `bpf-lb-sock-hostns-only`)
+was not run: it would only have salvaged a Service-based issuer, and the host-network shape
+removes the Service rather than fixing translation for it. If the static pod's exclusion from
+socket load balancing ever matters for something else, that is where to start.
 
 ## Risks
 

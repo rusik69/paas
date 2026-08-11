@@ -7,7 +7,31 @@
       "Bash(git ls-remote *)",
       "Read(//home/rusik/.ssh/**)",
       "Bash(command -v git ssh-keyscan)",
-      "Read(//usr/bin/**)"
+      "Read(//usr/bin/**)",
+      "Bash(virsh -c qemu:///system list --all)",
+      "Bash(time make verify)",
+      "Bash(shellcheck -x hack/*.sh)",
+      "Bash(go run *)",
+      "Bash(make actionlint *)",
+      "Bash(go mod *)",
+      "Read(//sys/module/kvm_intel/parameters/**)",
+      "Read(//sys/module/kvm_amd/parameters/**)",
+      "Bash(make deps *)",
+      "Bash(make cluster-up *)",
+      "Bash(tee /home/rusik/.claude/jobs/29960fbf/tmp/cluster-up.log)",
+      "Read(//home/rusik/.claude/jobs/29960fbf/tmp/**)",
+      "Read(//tmp/claude-1000/-home-rusik-go-src-github-com-rusik69-paas/**)",
+      "Bash(make verify *)",
+      "Bash(shfmt -d hack/*.sh)",
+      "Bash(make shfmt *)",
+      "Bash(make vuln *)",
+      "Bash(make versions *)",
+      "Bash(make check-stdout *)",
+      "Bash(make fmt *)",
+      "Bash(make lint *)",
+      "Bash(set -o pipefail)",
+      "Bash(make e2e *)",
+      "Bash(echo \"EXIT=$?\")"
     ]
   }
 }
