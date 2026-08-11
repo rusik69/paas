@@ -31,7 +31,7 @@ func (f *fakeManager) GetCache() cache.Cache { return f.cache }
 func TestEngine_StartIsIdempotent(t *testing.T) {
 	var mu sync.Mutex
 	var built int
-	e := &Engine{Build: func(_ context.Context, _ schema.GroupVersionKind) error {
+	e := &Engine{Build: func(_ context.Context, _ schema.GroupVersionKind, _ func()) error {
 		mu.Lock()
 		defer mu.Unlock()
 		built++
@@ -60,7 +60,7 @@ func TestEngine_StopCancelsBeforeRemoving(t *testing.T) {
 	done := make(chan struct{})
 
 	e := &Engine{
-		Build: func(ctx context.Context, _ schema.GroupVersionKind) error {
+		Build: func(ctx context.Context, _ schema.GroupVersionKind, _ func()) error {
 			go func() {
 				<-ctx.Done()
 				mu.Lock()
@@ -97,22 +97,70 @@ func TestEngine_StopCancelsBeforeRemoving(t *testing.T) {
 }
 
 func TestEngine_RunningFalseForAnUnseenGVK(t *testing.T) {
-	e := &Engine{Build: func(context.Context, schema.GroupVersionKind) error { return nil }}
+	e := &Engine{Build: func(context.Context, schema.GroupVersionKind, func()) error { return nil }}
 	if e.Running(testGVK) {
 		t.Error("Running reports true for a gvk that was never started or stopped")
 	}
 }
 
 func TestEngine_StopUnknownIsNotAnError(t *testing.T) {
-	e := &Engine{Build: func(context.Context, schema.GroupVersionKind) error { return nil }}
+	e := &Engine{Build: func(context.Context, schema.GroupVersionKind, func()) error { return nil }}
 	if err := e.Stop(t.Context(), testGVK); err != nil {
 		t.Errorf("Stop on an unstarted kind returned %v; reconcile is level-triggered and will ask more than once", err)
 	}
 }
 
+// TestEngine_DoneReleasesAKindThatStoppedOnItsOwn is the regression guard for
+// the window a Builder that starts its controller in a goroutine opens: a
+// cache-sync timeout, say, stops the controller without anyone calling Stop.
+// Without done clearing the entry, Start would find en.cancel still set and
+// no-op forever, leaving the kind dead with nothing to recover it.
+func TestEngine_DoneReleasesAKindThatStoppedOnItsOwn(t *testing.T) {
+	var mu sync.Mutex
+	var built int
+	var done func()
+
+	e := &Engine{Build: func(_ context.Context, _ schema.GroupVersionKind, d func()) error {
+		mu.Lock()
+		built++
+		done = d
+		mu.Unlock()
+		return nil
+	}}
+
+	if err := e.Start(t.Context(), testGVK); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !e.Running(testGVK) {
+		t.Fatal("Running reports false right after Start")
+	}
+
+	// The controller stops on its own — nobody called Stop.
+	mu.Lock()
+	done()
+	mu.Unlock()
+
+	if e.Running(testGVK) {
+		t.Error("Running reports true after the controller's own done fired")
+	}
+
+	if err := e.Start(t.Context(), testGVK); err != nil {
+		t.Fatalf("Start after done: %v", err)
+	}
+	mu.Lock()
+	got := built
+	mu.Unlock()
+	if got != 2 {
+		t.Errorf("built %d controllers, want 2 — a kind that died on its own must be startable again", got)
+	}
+	if !e.Running(testGVK) {
+		t.Error("Running reports false after the second Start")
+	}
+}
+
 func TestEngine_StartBuildFailureDoesNotLeaveRunning(t *testing.T) {
 	wantErr := errors.New("boom")
-	e := &Engine{Build: func(context.Context, schema.GroupVersionKind) error {
+	e := &Engine{Build: func(context.Context, schema.GroupVersionKind, func()) error {
 		return wantErr
 	}}
 
@@ -131,7 +179,7 @@ func TestEngine_StartBuildFailureDoesNotLeaveRunning(t *testing.T) {
 func TestEngine_StopRemoveInformerFailurePropagates(t *testing.T) {
 	wantErr := errors.New("remove failed")
 	e := &Engine{
-		Build: func(context.Context, schema.GroupVersionKind) error { return nil },
+		Build: func(context.Context, schema.GroupVersionKind, func()) error { return nil },
 		removeInformer: func(context.Context, schema.GroupVersionKind) error {
 			return wantErr
 		},
@@ -166,7 +214,7 @@ func TestEngine_StopBlocksConcurrentStartForSameGVK(t *testing.T) {
 	var order []string
 
 	e := &Engine{
-		Build: func(context.Context, schema.GroupVersionKind) error {
+		Build: func(context.Context, schema.GroupVersionKind, func()) error {
 			mu.Lock()
 			order = append(order, "built")
 			mu.Unlock()
@@ -227,7 +275,7 @@ func TestEngine_StopForOneGVKDoesNotBlockStartForAnother(t *testing.T) {
 	releaseRemove := make(chan struct{})
 
 	e := &Engine{
-		Build: func(context.Context, schema.GroupVersionKind) error { return nil },
+		Build: func(context.Context, schema.GroupVersionKind, func()) error { return nil },
 		removeInformer: func(_ context.Context, gvk schema.GroupVersionKind) error {
 			if gvk == testGVK {
 				close(removeStarted)
@@ -266,7 +314,7 @@ func TestEngine_RunningDoesNotBlockBehindAnotherGVKsStop(t *testing.T) {
 	releaseRemove := make(chan struct{})
 
 	e := &Engine{
-		Build: func(context.Context, schema.GroupVersionKind) error { return nil },
+		Build: func(context.Context, schema.GroupVersionKind, func()) error { return nil },
 		removeInformer: func(_ context.Context, gvk schema.GroupVersionKind) error {
 			if gvk == testGVK {
 				close(removeStarted)
@@ -300,7 +348,7 @@ func TestEngine_RunningDoesNotBlockBehindAnotherGVKsStop(t *testing.T) {
 func TestEngine_StopUsesManagerCacheByDefault(t *testing.T) {
 	e := &Engine{
 		Manager: &fakeManager{cache: &informertest.FakeInformers{}},
-		Build:   func(context.Context, schema.GroupVersionKind) error { return nil },
+		Build:   func(context.Context, schema.GroupVersionKind, func()) error { return nil },
 	}
 
 	if err := e.Start(t.Context(), testGVK); err != nil {

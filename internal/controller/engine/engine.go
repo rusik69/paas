@@ -18,7 +18,14 @@ import (
 
 // Builder starts a controller for one kind. It must return once the controller
 // is running, and the controller must stop when ctx is cancelled.
-type Builder func(ctx context.Context, gvk schema.GroupVersionKind) error
+//
+// Starting a controller launches work — a goroutine driving its run loop —
+// that outlives Build's own return, so done must be called exactly once when
+// that work stops, for any reason: an engine-initiated Stop, but also one the
+// engine did not ask for, such as a cache-sync timeout. Without that signal
+// the engine has no way to learn the kind died on its own, and a later Start
+// would find it permanently marked running.
+type Builder func(ctx context.Context, gvk schema.GroupVersionKind, done func()) error
 
 // entry serialises Start and Stop for one gvk. Build and informer removal can
 // both block — on cache sync, on informer goroutines winding down — and doing
@@ -27,6 +34,19 @@ type Builder func(ctx context.Context, gvk schema.GroupVersionKind) error
 type entry struct {
 	mu     sync.Mutex
 	cancel context.CancelFunc
+}
+
+// clear releases a controller that stopped on its own rather than through
+// Stop. It is the done callback Start hands to Build, so it must not be
+// called by anything already holding en.mu — Stop calls its own inline
+// equivalent for exactly that reason.
+func (en *entry) clear() {
+	en.mu.Lock()
+	defer en.mu.Unlock()
+	if en.cancel != nil {
+		en.cancel()
+		en.cancel = nil
+	}
 }
 
 // Engine owns the running controllers for generated kinds.
@@ -74,7 +94,7 @@ func (e *Engine) Start(ctx context.Context, gvk schema.GroupVersionKind) error {
 	// Deliberately not derived from the reconcile request's context: that one
 	// is cancelled when the reconcile returns, and this controller outlives it.
 	cctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	if err := e.Build(cctx, gvk); err != nil {
+	if err := e.Build(cctx, gvk, en.clear); err != nil {
 		cancel()
 		return fmt.Errorf("start controller for %s: %w", gvk, err)
 	}

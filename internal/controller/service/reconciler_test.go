@@ -9,6 +9,8 @@ import (
 
 	helmv2 "github.com/fluxcd/helm-controller/api/v2"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
+	"github.com/go-logr/logr"
+	"github.com/go-logr/logr/funcr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -19,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 
 	"github.com/rusik69/paas/api/platform/v1alpha1"
 )
@@ -96,6 +99,30 @@ func statusSource() v1alpha1.StatusSource {
 
 func request(namespace, name string) ctrl.Request {
 	return ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: name}}
+}
+
+// fakeManager overrides only the two ctrl.Manager methods controllerOptions
+// calls. Embedding a nil Manager satisfies the (large) interface for every
+// other method, which must never be called here.
+type fakeManager struct {
+	ctrl.Manager
+	logger logr.Logger
+}
+
+func (f fakeManager) GetLogger() logr.Logger                  { return f.logger }
+func (f fakeManager) GetControllerOptions() config.Controller { return config.Controller{} }
+
+// The regression this guards: controller.NewUnmanaged skips the defaulting
+// mgr.Add would otherwise have done, which is where the manager's logger
+// comes from. Without it every "Reconciler error" for every generated kind
+// is silently discarded.
+func TestControllerOptions_CarriesANonNilLogger(t *testing.T) {
+	mgr := fakeManager{logger: funcr.New(func(_, _ string) {}, funcr.Options{})}
+
+	got := testReconciler().controllerOptions(mgr)
+	if got.Logger.GetSink() == nil {
+		t.Error("controller options carry a nil logger sink")
+	}
 }
 
 func TestDesired_SameNamespaceAndOwned(t *testing.T) {

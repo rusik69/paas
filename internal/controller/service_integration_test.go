@@ -274,7 +274,7 @@ func TestServiceSetupWithManager_RegistersTheReconciler(t *testing.T) {
 		t.Fatalf("build manager: %v", err)
 	}
 
-	if err := serviceReconciler(t, postgresClass()).SetupWithManager(t.Context(), mgr); err != nil {
+	if err := serviceReconciler(t, postgresClass()).SetupWithManager(t.Context(), mgr, func() {}); err != nil {
 		t.Errorf("register service reconciler: %v", err)
 	}
 }
@@ -293,7 +293,7 @@ func TestServiceSetupWithManager_RegistersWithNoStatusFrom(t *testing.T) {
 	class := postgresClass()
 	class.Name = "postgres-no-status"
 	class.Spec.StatusFrom = nil
-	if err := serviceReconciler(t, class).SetupWithManager(t.Context(), mgr); err != nil {
+	if err := serviceReconciler(t, class).SetupWithManager(t.Context(), mgr, func() {}); err != nil {
 		t.Errorf("register service reconciler: %v", err)
 	}
 }
@@ -348,18 +348,24 @@ func TestServiceSetupWithManager_StartAfterStopSucceeds(t *testing.T) {
 	class.Spec.StatusFrom = nil
 	r := serviceReconciler(t, class)
 
+	firstDone := make(chan struct{})
 	ctx1, cancel1 := context.WithCancel(t.Context())
-	if err := r.SetupWithManager(ctx1, mgr); err != nil {
+	if err := r.SetupWithManager(ctx1, mgr, func() { close(firstDone) }); err != nil {
 		t.Fatalf("first SetupWithManager: %v", err)
 	}
 	newPostgres(t, "tenant-service", "restart-one")
 	waitForHelmRelease(t, "tenant-service", "restart-one")
 
 	cancel1() // simulate the engine's Stop for this kind
+	select {
+	case <-firstDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("done was not called after ctx was cancelled — engine.Start would never be able to run this kind again")
+	}
 
 	ctx2, cancel2 := context.WithCancel(t.Context())
 	t.Cleanup(cancel2)
-	if err := r.SetupWithManager(ctx2, mgr); err != nil {
+	if err := r.SetupWithManager(ctx2, mgr, func() {}); err != nil {
 		t.Fatalf("second SetupWithManager after stop: %v", err)
 	}
 	newPostgres(t, "tenant-service", "restart-two")

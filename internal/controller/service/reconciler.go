@@ -86,48 +86,60 @@ type Reconciler struct {
 // nothing — the controller keeps running while Stop removes its informer out
 // from under it. Building it unmanaged and starting it on ctx directly makes
 // the controller's lifetime actually the one the engine owns.
-func (r *Reconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager) error {
+//
+// done is called exactly once, when the controller's run loop returns — on a
+// clean shutdown via ctx, but also on an internal failure such as a
+// cache-sync timeout that ctx never asked for. It matches engine.Builder's
+// contract so a Builder can wrap this directly.
+func (r *Reconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, done func()) error {
 	ctrl.LoggerFrom(ctx).Info("registering service controller", "kind", r.GVK.Kind)
 
-	// The engine builds and tears down one controller per kind as
-	// ServiceClasses come and go, so the same name is legitimately reused
-	// across a Stop and a later Start. controller-runtime's uniqueness check
-	// exists for controllers wired once at manager startup, which these are
-	// not, and without this a second Start for the same kind fails forever
-	// with "already exists".
-	skipNameValidation := true
-	c, err := controller.NewUnmanaged("service-"+r.Class.Name, controller.Options{
-		Reconciler:         r,
-		SkipNameValidation: &skipNameValidation,
-	})
-	if err != nil {
-		return fmt.Errorf("build controller for %s: %w", r.Class.Name, err)
-	}
+	// The only ways NewUnmanaged can fail are a nil Reconciler, an empty
+	// name, or a name collision — none reachable here: r is never nil (it is
+	// the receiver), the name always carries the "service-" prefix, and
+	// SkipNameValidation is set by controllerOptions.
+	c, _ := controller.NewUnmanaged("service-"+r.Class.Name, r.controllerOptions(mgr))
 
 	cr := &unstructured.Unstructured{}
 	cr.SetGroupVersionKind(r.GVK)
-	if err := c.Watch(source.Kind(mgr.GetCache(), client.Object(cr), &handler.EnqueueRequestForObject{})); err != nil {
-		return fmt.Errorf("watch %s: %w", r.GVK.Kind, err)
-	}
-	if err := c.Watch(source.Kind(mgr.GetCache(), client.Object(&helmv2.HelmRelease{}),
-		handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(), cr, handler.OnlyControllerOwner()))); err != nil {
-		return fmt.Errorf("watch helmrelease: %w", err)
-	}
+	// Watch, called before Start, only records the source for Start to pick
+	// up later and cannot itself fail.
+	_ = c.Watch(source.Kind(mgr.GetCache(), client.Object(cr), &handler.EnqueueRequestForObject{}))
+	_ = c.Watch(source.Kind(mgr.GetCache(), client.Object(&helmv2.HelmRelease{}),
+		handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(), cr, handler.OnlyControllerOwner())))
 	for _, s := range r.Class.Spec.StatusFrom {
 		src := &unstructured.Unstructured{}
 		src.SetAPIVersion(s.From.APIVersion)
 		src.SetKind(s.From.Kind)
-		if err := c.Watch(source.Kind(mgr.GetCache(), client.Object(src), handler.EnqueueRequestsFromMapFunc(byServiceLabels))); err != nil {
-			return fmt.Errorf("watch %s: %w", s.From.Kind, err)
-		}
+		_ = c.Watch(source.Kind(mgr.GetCache(), client.Object(src), handler.EnqueueRequestsFromMapFunc(byServiceLabels)))
 	}
 
 	go func() {
+		defer done()
 		if err := c.Start(ctx); err != nil {
 			ctrl.LoggerFrom(ctx).Error(err, "service controller stopped", "kind", r.GVK.Kind)
 		}
 	}()
 	return nil
+}
+
+// controllerOptions builds the options an unmanaged controller needs.
+// controller.NewUnmanaged skips the defaulting mgr.Add would otherwise do —
+// that is where MaxConcurrentReconciles, CacheSyncTimeout and, most
+// importantly, the manager's logger come from. Without it, every
+// "Reconciler error" for every generated kind is silently discarded: a
+// tenant's object failing to reconcile would produce no log line at all.
+func (r *Reconciler) controllerOptions(mgr ctrl.Manager) controller.Options {
+	skipNameValidation := true
+	options := controller.Options{
+		Reconciler:         r,
+		SkipNameValidation: &skipNameValidation,
+	}
+	options.DefaultFromConfig(mgr.GetControllerOptions())
+	if options.Logger.GetSink() == nil {
+		options.Logger = mgr.GetLogger()
+	}
+	return options
 }
 
 // byServiceLabels maps an underlying object back to the CR whose status it
