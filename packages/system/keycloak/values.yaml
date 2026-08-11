@@ -120,3 +120,9 @@ keycloakx:
     requests:
       cpu: 200m
       memory: 512Mi
+    limits:
+      # A limit, not just a request, because the JVM sizes its heap against
+      # whatever memory it can see. Unbounded on a node it shares with etcd and
+      # the API server, it grew until the kernel picked a victim — and the
+      # kernel's choice is not always Keycloak.
+      memory: 1536Mi
