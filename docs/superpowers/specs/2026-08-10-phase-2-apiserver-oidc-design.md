@@ -93,9 +93,22 @@ the `kube-apiserver` static pod does not get that translation, and the authentic
 every ten seconds saying so. The precedent that motivated the ClusterIP design does not
 transfer, and neither does the NodePort fallback.
 
+### Cilium is not the fault (measured 2026-08-11)
+
+A `hostNetwork` pod pinned to the control-plane node reaches **both** addresses with HTTP 200 —
+the ClusterIP and the NodePort — and `cilium-dbg service list` on that node shows both frontends
+with an active backend. So the datapath, the service tables and host-namespace socket load
+balancing all work on the very node the API server runs on.
+
+What refuses the connection is therefore specific to the `kube-apiserver` static pod, not to
+Cilium or to the node. Changing Cilium's values will not fix it, and the two rounds spent moving
+the issuer between service types were looking in the wrong place.
+
 **The remaining approach is to avoid service translation altogether**: run Keycloak with
-`hostNetwork: true`, pinned to the control-plane node, binding the issuer port directly. The API
-server then dials the node's own address with no Service involved, and in-cluster clients can
+`hostNetwork: true`, pinned to the control-plane node, binding the issuer port directly. That is
+now the measured recommendation rather than a guess: a host-network pod on that node is exactly
+what was just shown to be reachable, and the API server would be dialling a real listener on the
+node's own address with no Service, no frontend and nothing to translate, and in-cluster clients can
 reach the same address because a node IP is routable from pods. The certificate SAN, the issuer
 URL and `KC_HOSTNAME` all become that node address, and `hack/e2e.sh` already regenerates the
 certificate when that address changes.
