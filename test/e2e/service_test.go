@@ -82,17 +82,23 @@ func postgresFixture(ns, name string, spec map[string]any) *unstructured.Unstruc
 }
 
 // waitPostgresReady waits for the Postgres CR to report Ready, with a primary
-// that agrees with the CNPG Cluster's own opinion of who that is — checked
-// together, because a hardcoded status.primary would pass a test that only
-// checked non-emptiness.
-func waitPostgresReady(t *testing.T, ns, name string, timeout time.Duration) string {
+// that agrees with the CNPG Cluster's own opinion of who that is, AND every
+// instance the fixture asked for actually ready — all three folded into one
+// wait, so "this Postgres is up" has one definition and nothing downstream
+// asserts a stronger condition than this waited for. The primary-equality
+// check is the point of the test that calls this: a hardcoded status.primary
+// would pass a check that only looked for non-emptiness. wantInstances is not
+// loosened either — instance 2 can still be mid pg_basebackup onto a
+// DRBD-replicated volume well after instance 1 alone reports a primary.
+func waitPostgresReady(t *testing.T, ns, name string, wantInstances int64, timeout time.Duration) string {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(t.Context(), timeout)
 	defer cancel()
 
 	var last, primary string
-	err := wait.For(ctx, 10*time.Second, "postgres "+name+" ready with a primary",
+	err := wait.For(ctx, 10*time.Second,
+		fmt.Sprintf("postgres %s ready with a primary and %d instance(s)", name, wantInstances),
 		func(ctx context.Context) (bool, error) {
 			got, err := dynClient.Resource(postgresGVR).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
 			if err != nil {
@@ -112,10 +118,12 @@ func waitPostgresReady(t *testing.T, ns, name string, timeout time.Duration) str
 				return false, nil
 			}
 			clusterPrimary, _, _ := unstructured.NestedString(cluster.Object, "status", "currentPrimary")
-			last = fmt.Sprintf("postgres ready=%s primary=%q cluster.currentPrimary=%q", status, p, clusterPrimary)
+			ready, _, _ := unstructured.NestedInt64(cluster.Object, "status", "readyInstances")
+			last = fmt.Sprintf("postgres ready=%s primary=%q cluster.currentPrimary=%q readyInstances=%d",
+				status, p, clusterPrimary, ready)
 
 			primary = p
-			return status == "True" && p != "" && p == clusterPrimary, nil
+			return status == "True" && p != "" && p == clusterPrimary && ready == wantInstances, nil
 		})
 	if err != nil {
 		t.Fatalf("%v (last: %s)", err, last)
@@ -169,7 +177,7 @@ func TestService_PostgresBecomesReadyAndReportsItsPrimary(t *testing.T) {
 		}
 	})
 
-	primary := waitPostgresReady(t, ns, name, 15*time.Minute)
+	primary := waitPostgresReady(t, ns, name, 2, 15*time.Minute)
 	if primary == "" {
 		t.Fatal("postgres reports no primary")
 	}
@@ -290,7 +298,7 @@ func TestService_DeleteReclaimsEverything(t *testing.T) {
 		t.Fatalf("create postgres %s/%s: %v", ns, name, err)
 	}
 
-	waitPostgresReady(t, ns, name, 15*time.Minute)
+	waitPostgresReady(t, ns, name, 1, 15*time.Minute)
 
 	if n := pvcCount(t.Context(), t, ns, name); n == 0 {
 		t.Fatal("no PVCs exist before deletion; the reclaim assertion below would prove nothing")
