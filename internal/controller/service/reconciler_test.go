@@ -9,19 +9,19 @@ import (
 
 	helmv2 "github.com/fluxcd/helm-controller/api/v2"
 	sourcev1 "github.com/fluxcd/source-controller/api/v1"
-	"github.com/go-logr/logr"
-	"github.com/go-logr/logr/funcr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/config"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	"github.com/rusik69/paas/api/platform/v1alpha1"
 )
@@ -101,25 +101,42 @@ func request(namespace, name string) ctrl.Request {
 	return ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: name}}
 }
 
-// fakeManager overrides only the two ctrl.Manager methods controllerOptions
-// calls. Embedding a nil Manager satisfies the (large) interface for every
-// other method, which must never be called here.
-type fakeManager struct {
-	ctrl.Manager
-	logger logr.Logger
+// testManager builds a real *manager.manager rather than a fake: manager.New
+// never dials the API server at construction time, so an unreachable host
+// costs nothing here and still exercises controller.Options.DefaultFromConfig
+// against the exact values manager.New's own setOptionsDefaults produces —
+// which a hand-rolled fake could get wrong in either direction.
+func testManager(t *testing.T, opts config.Controller) ctrl.Manager {
+	t.Helper()
+
+	mgr, err := ctrl.NewManager(&rest.Config{Host: "https://127.0.0.1:1"}, ctrl.Options{
+		Metrics:    metricsserver.Options{BindAddress: "0"},
+		Controller: opts,
+	})
+	if err != nil {
+		t.Fatalf("build manager: %v", err)
+	}
+	return mgr
 }
 
-func (f fakeManager) GetLogger() logr.Logger                  { return f.logger }
-func (f fakeManager) GetControllerOptions() config.Controller { return config.Controller{} }
-
 // The regression this guards: controller.NewUnmanaged skips the defaulting
-// mgr.Add would otherwise have done, which is where the manager's logger
-// comes from. Without it every "Reconciler error" for every generated kind
-// is silently discarded.
-func TestControllerOptions_CarriesANonNilLogger(t *testing.T) {
-	mgr := fakeManager{logger: funcr.New(func(_, _ string) {}, funcr.Options{})}
+// mgr.Add would otherwise have done, which is where MaxConcurrentReconciles,
+// CacheSyncTimeout and the manager's logger all come from. Without it every
+// "Reconciler error" for every generated kind is silently discarded, and a
+// misconfigured concurrency or cache-sync setting is silently ignored too.
+func TestControllerOptions_DefaultsFromTheManager(t *testing.T) {
+	mgr := testManager(t, config.Controller{
+		MaxConcurrentReconciles: 7,
+		CacheSyncTimeout:        42 * time.Second,
+	})
 
 	got := testReconciler().controllerOptions(mgr)
+	if got.MaxConcurrentReconciles != 7 {
+		t.Errorf("MaxConcurrentReconciles = %d, want the manager's 7", got.MaxConcurrentReconciles)
+	}
+	if got.CacheSyncTimeout != 42*time.Second {
+		t.Errorf("CacheSyncTimeout = %v, want the manager's 42s", got.CacheSyncTimeout)
+	}
 	if got.Logger.GetSink() == nil {
 		t.Error("controller options carry a nil logger sink")
 	}

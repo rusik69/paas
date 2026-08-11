@@ -32,17 +32,31 @@ type Builder func(ctx context.Context, gvk schema.GroupVersionKind, done func())
 // either while holding a lock shared across all kinds would queue every other
 // kind's Start, Stop and Running behind it.
 type entry struct {
-	mu     sync.Mutex
-	cancel context.CancelFunc
+	mu sync.Mutex
+	// generation counts the controllers this entry has held, so a done
+	// callback from one of them can tell whether it is still that one.
+	generation uint64
+	cancel     context.CancelFunc
 }
 
-// clear releases a controller that stopped on its own rather than through
-// Stop. It is the done callback Start hands to Build, so it must not be
-// called by anything already holding en.mu — Stop calls its own inline
-// equivalent for exactly that reason.
-func (en *entry) clear() {
+// clear releases the controller for generation if it is still the current
+// one for this gvk. done callbacks arrive asynchronously and can land after
+// a Stop and a later Start have already replaced this entry's cancel — a
+// class update does exactly that, since Stop's RemoveInformer returns far
+// sooner than a draining controller's Start. Without the generation check,
+// a stale done would call en.cancel() on the new controller and cancel it
+// instead of doing nothing, leaving the kind dead until some unrelated later
+// event happened to restart it.
+//
+// It is the done callback Start hands to Build, so it must not be called by
+// anything already holding en.mu — Stop calls its own inline equivalent for
+// exactly that reason.
+func (en *entry) clear(generation uint64) {
 	en.mu.Lock()
 	defer en.mu.Unlock()
+	if en.generation != generation {
+		return
+	}
 	if en.cancel != nil {
 		en.cancel()
 		en.cancel = nil
@@ -91,10 +105,13 @@ func (e *Engine) Start(ctx context.Context, gvk schema.GroupVersionKind) error {
 		return nil
 	}
 
+	en.generation++
+	generation := en.generation
+
 	// Deliberately not derived from the reconcile request's context: that one
 	// is cancelled when the reconcile returns, and this controller outlives it.
 	cctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	if err := e.Build(cctx, gvk, en.clear); err != nil {
+	if err := e.Build(cctx, gvk, func() { en.clear(generation) }); err != nil {
 		cancel()
 		return fmt.Errorf("start controller for %s: %w", gvk, err)
 	}

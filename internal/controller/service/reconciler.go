@@ -97,7 +97,10 @@ func (r *Reconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, don
 	// The only ways NewUnmanaged can fail are a nil Reconciler, an empty
 	// name, or a name collision — none reachable here: r is never nil (it is
 	// the receiver), the name always carries the "service-" prefix, and
-	// SkipNameValidation is set by controllerOptions.
+	// controllerOptions sets SkipNameValidation. That last one is load-bearing
+	// for this discarded error, not just for reuse across Stop and Start: if
+	// SkipNameValidation is ever turned off, c is nil on a collision and the
+	// first Watch below panics.
 	c, _ := controller.NewUnmanaged("service-"+r.Class.Name, r.controllerOptions(mgr))
 
 	cr := &unstructured.Unstructured{}
@@ -129,6 +132,10 @@ func (r *Reconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, don
 // importantly, the manager's logger come from. Without it, every
 // "Reconciler error" for every generated kind is silently discarded: a
 // tenant's object failing to reconcile would produce no log line at all.
+//
+// DefaultFromConfig alone is enough: manager.New's own setOptionsDefaults
+// always forces Controller.Logger to a non-nil sink, so there is no real
+// manager for which the result here would still need a fallback.
 func (r *Reconciler) controllerOptions(mgr ctrl.Manager) controller.Options {
 	skipNameValidation := true
 	options := controller.Options{
@@ -136,9 +143,6 @@ func (r *Reconciler) controllerOptions(mgr ctrl.Manager) controller.Options {
 		SkipNameValidation: &skipNameValidation,
 	}
 	options.DefaultFromConfig(mgr.GetControllerOptions())
-	if options.Logger.GetSink() == nil {
-		options.Logger = mgr.GetLogger()
-	}
 	return options
 }
 

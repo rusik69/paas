@@ -158,6 +158,99 @@ func TestEngine_DoneReleasesAKindThatStoppedOnItsOwn(t *testing.T) {
 	}
 }
 
+// TestEngine_StaleDoneDoesNotCancelASuccessor is the regression guard for a
+// class update: Stop returns as soon as RemoveInformer does, well before the
+// old controller's draining c.Start actually calls done. If a Start for the
+// same gvk lands in that window, the old done must not touch the new
+// controller when it finally arrives — the generation check is what makes
+// that true rather than merely usually true.
+func TestEngine_StaleDoneDoesNotCancelASuccessor(t *testing.T) {
+	var mu sync.Mutex
+	var dones []func()
+	var ctxs []context.Context
+
+	e := &Engine{
+		Build: func(ctx context.Context, _ schema.GroupVersionKind, done func()) error {
+			mu.Lock()
+			dones = append(dones, done)
+			ctxs = append(ctxs, ctx)
+			mu.Unlock()
+			return nil
+		},
+		removeInformer: func(context.Context, schema.GroupVersionKind) error { return nil },
+	}
+
+	if err := e.Start(t.Context(), testGVK); err != nil {
+		t.Fatalf("Start (1st): %v", err)
+	}
+	if err := e.Stop(t.Context(), testGVK); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := e.Start(t.Context(), testGVK); err != nil {
+		t.Fatalf("Start (2nd): %v", err)
+	}
+
+	mu.Lock()
+	staleDone := dones[0]
+	secondCtx := ctxs[1]
+	mu.Unlock()
+
+	// The first controller's done arrives late — after Stop already nil'd its
+	// cancel and a second Start replaced it with a new one.
+	staleDone()
+
+	if !e.Running(testGVK) {
+		t.Error("Running reports false — a stale done cleared the current controller instead of doing nothing")
+	}
+	select {
+	case <-secondCtx.Done():
+		t.Error("the second controller's context was cancelled by the first controller's stale done")
+	default:
+	}
+}
+
+// TestEngine_DoneRacingStopIsHarmless covers the ordering the generation
+// check does not need to disambiguate: done and Stop for the very same
+// controller, arriving in either order. Both converge on "not running",
+// never on a panic or a double-cancel.
+func TestEngine_DoneRacingStopIsHarmless(t *testing.T) {
+	var mu sync.Mutex
+	var done func()
+
+	e := &Engine{
+		Build: func(_ context.Context, _ schema.GroupVersionKind, d func()) error {
+			mu.Lock()
+			done = d
+			mu.Unlock()
+			return nil
+		},
+		removeInformer: func(context.Context, schema.GroupVersionKind) error { return nil },
+	}
+
+	if err := e.Start(t.Context(), testGVK); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		mu.Lock()
+		d := done
+		mu.Unlock()
+		d()
+	}()
+	go func() {
+		defer wg.Done()
+		_ = e.Stop(t.Context(), testGVK)
+	}()
+	wg.Wait()
+
+	if e.Running(testGVK) {
+		t.Error("Running reports true after both done and Stop ran")
+	}
+}
+
 func TestEngine_StartBuildFailureDoesNotLeaveRunning(t *testing.T) {
 	wantErr := errors.New("boom")
 	e := &Engine{Build: func(context.Context, schema.GroupVersionKind, func()) error {
