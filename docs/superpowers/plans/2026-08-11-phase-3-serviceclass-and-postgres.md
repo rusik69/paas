@@ -1056,7 +1056,7 @@ git commit -m "Render a ServiceClass into the CRD that serves its kind"
 
 **Files:**
 - Create: `internal/controller/engine/engine.go`
-- Test: `internal/controller/engine/engine_integration_test.go` (envtest, `//go:build integration`)
+- Test: `internal/controller/engine/engine_test.go` — a plain unit test. It needs no API server, so it must run in `make test`; do not put it behind the integration tag.
 - Modify: `Makefile:22` (add `internal/controller/engine`)
 
 **Interfaces:**
@@ -1065,18 +1065,18 @@ git commit -m "Render a ServiceClass into the CRD that serves its kind"
   - `type Builder func(ctx context.Context, gvk schema.GroupVersionKind) error`
   - `type Engine struct { Manager ctrl.Manager; Build Builder }`
   - `func (e *Engine) Start(ctx context.Context, gvk schema.GroupVersionKind) error` — idempotent
-  - `func (e *Engine) Stop(gvk schema.GroupVersionKind) error`
+  - `func (e *Engine) Stop(ctx context.Context, gvk schema.GroupVersionKind) error`
   - `func (e *Engine) Running(gvk schema.GroupVersionKind) bool`
+
+`Stop` takes a context so cache removal has one. The global constraint against `context.Background()` has no exception here, and an earlier draft of this plan carved one out — it was wrong, and threading the caller's context is both cleaner and shorter.
 
 `Build` is injected so the engine's lifecycle is testable without standing up a real service reconciler, and so Task 6 can supply the real one without the engine importing it.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `internal/controller/engine/engine_integration_test.go`:
+Create `internal/controller/engine/engine_test.go`:
 
 ```go
-//go:build integration
-
 package engine
 
 import (
@@ -1131,7 +1131,7 @@ func TestEngine_StopCancelsBeforeRemoving(t *testing.T) {
 			}()
 			return nil
 		},
-		removeInformer: func(gvk schema.GroupVersionKind) error {
+		removeInformer: func(_ context.Context, gvk schema.GroupVersionKind) error {
 			<-done
 			mu.Lock()
 			order = append(order, "removed")
@@ -1143,7 +1143,7 @@ func TestEngine_StopCancelsBeforeRemoving(t *testing.T) {
 	if err := e.Start(t.Context(), testGVK); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if err := e.Stop(testGVK); err != nil {
+	if err := e.Stop(t.Context(), testGVK); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
 
@@ -1159,7 +1159,7 @@ func TestEngine_StopCancelsBeforeRemoving(t *testing.T) {
 
 func TestEngine_StopUnknownIsNotAnError(t *testing.T) {
 	e := &Engine{Build: func(context.Context, schema.GroupVersionKind) error { return nil }}
-	if err := e.Stop(testGVK); err != nil {
+	if err := e.Stop(t.Context(), testGVK); err != nil {
 		t.Errorf("Stop on an unstarted kind returned %v; reconcile is level-triggered and will ask more than once", err)
 	}
 }
@@ -1167,7 +1167,7 @@ func TestEngine_StopUnknownIsNotAnError(t *testing.T) {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `make test-integration 2>&1 | grep -A5 engine`
+Run: `go test ./internal/controller/engine/... -v`
 Expected: FAIL — `undefined: Engine`.
 
 - [ ] **Step 3: Write the implementation**
@@ -1207,7 +1207,7 @@ type Engine struct {
 
 	// removeInformer is swappable so the lifecycle can be tested without a
 	// live cache.
-	removeInformer func(schema.GroupVersionKind) error
+	removeInformer func(context.Context, schema.GroupVersionKind) error
 }
 
 // Start runs a controller for gvk. Calling it for a kind already running is a
@@ -1235,7 +1235,7 @@ func (e *Engine) Start(ctx context.Context, gvk schema.GroupVersionKind) error {
 }
 
 // Stop cancels the controller for gvk and drops its informer, in that order.
-func (e *Engine) Stop(gvk schema.GroupVersionKind) error {
+func (e *Engine) Stop(ctx context.Context, gvk schema.GroupVersionKind) error {
 	e.mu.Lock()
 	cancel, ok := e.running[gvk]
 	if ok {
@@ -1252,7 +1252,7 @@ func (e *Engine) Stop(gvk schema.GroupVersionKind) error {
 	if remove == nil {
 		remove = e.removeFromCache
 	}
-	if err := remove(gvk); err != nil {
+	if err := remove(ctx, gvk); err != nil {
 		return fmt.Errorf("remove informer for %s: %w", gvk, err)
 	}
 	return nil
@@ -1266,18 +1266,16 @@ func (e *Engine) Running(gvk schema.GroupVersionKind) bool {
 	return ok
 }
 
-func (e *Engine) removeFromCache(gvk schema.GroupVersionKind) error {
+func (e *Engine) removeFromCache(ctx context.Context, gvk schema.GroupVersionKind) error {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(gvk)
-	return e.Manager.GetCache().RemoveInformer(context.Background(), u)
+	return e.Manager.GetCache().RemoveInformer(ctx, u)
 }
 ```
 
-`removeFromCache` is the one place `context.Background()` is acceptable: it is teardown, and the caller's context is already cancelled by the line above it. Note this in review rather than treating it as a guideline violation.
-
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `make test-integration 2>&1 | grep -E "engine|ok|FAIL"`
+Run: `go test ./internal/controller/engine/... -v`
 Expected: PASS.
 
 - [ ] **Step 5: Add to the coverage floor, verify and commit**
@@ -1297,7 +1295,7 @@ git commit -m "Run a controller per generated kind, and stop it again"
 
 **Files:**
 - Create: `internal/controller/service/reconciler.go`
-- Test: `internal/controller/service/reconciler_integration_test.go` (envtest, `//go:build integration`)
+- Test: `internal/controller/service/reconciler_test.go` — `desired` is pure rendering and needs no API server, so this runs in `make test`.
 - Modify: `Makefile:22` (add `internal/controller/service`)
 
 **Interfaces:**
@@ -1312,11 +1310,9 @@ git commit -m "Run a controller per generated kind, and stop it again"
 
 - [ ] **Step 1: Write the failing test**
 
-Create `internal/controller/service/reconciler_integration_test.go`. It tests `desired` directly — the rendering is the part worth pinning, and it needs no API server:
+Create `internal/controller/service/reconciler_test.go`. It tests `desired` directly — the rendering is the part worth pinning, and it needs no API server:
 
 ```go
-//go:build integration
-
 package service
 
 import (
@@ -1423,7 +1419,7 @@ Add `"strings"` to the imports.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `make test-integration 2>&1 | grep -A5 "controller/service"`
+Run: `go test ./internal/controller/service/... -v`
 Expected: FAIL — `undefined: Reconciler`.
 
 - [ ] **Step 3: Write the implementation**
@@ -1627,11 +1623,85 @@ func (r *Reconciler) syncStatus(ctx context.Context, cr *unstructured.Unstructur
 }
 ```
 
-Write `readStatusFrom` (list the `s.From` kind in the CR's namespace filtered by `LabelServiceName`/`LabelServiceNamespace`, read `s.JSONPath` with `k8s.io/client-go/util/jsonpath`, return `""` when absent) and `fieldPath` (split `.status.primary` into `["status","primary"]`). Add a test for each in the same file before implementing, following the same cycle.
+And the two helpers it calls:
+
+```go
+// fieldPath turns ".status.primary" into the segments SetNestedField wants.
+func fieldPath(p string) []string {
+	return strings.Split(strings.TrimPrefix(p, "."), ".")
+}
+
+// readStatusFrom finds the object a chart created for this CR and reads one
+// field out of it. An empty return means "not there yet", which is early
+// rather than broken.
+func (r *Reconciler) readStatusFrom(ctx context.Context, cr *unstructured.Unstructured, s v1alpha1.StatusSource) (string, error) {
+	list := &unstructured.UnstructuredList{}
+	list.SetAPIVersion(s.From.APIVersion)
+	list.SetKind(s.From.Kind + "List")
+	if err := r.List(ctx, list,
+		client.InNamespace(cr.GetNamespace()),
+		client.MatchingLabels{
+			LabelServiceName:      cr.GetName(),
+			LabelServiceNamespace: cr.GetNamespace(),
+		},
+	); err != nil {
+		// The kind may not be served at all if the chart has not installed its
+		// operator yet, which is the same "early" case as an empty list.
+		if meta.IsNoMatchError(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("list %s in %s: %w", s.From.Kind, cr.GetNamespace(), err)
+	}
+	if len(list.Items) == 0 {
+		return "", nil
+	}
+
+	jp := jsonpath.New("statusFrom")
+	if err := jp.Parse("{" + s.JSONPath + "}"); err != nil {
+		return "", fmt.Errorf("parse jsonPath %q: %w", s.JSONPath, err)
+	}
+	var buf bytes.Buffer
+	if err := jp.Execute(&buf, list.Items[0].Object); err != nil {
+		return "", nil
+	}
+	return buf.String(), nil
+}
+```
+
+Add `"bytes"`, `"strings"`, `"k8s.io/apimachinery/pkg/api/meta"` and `"k8s.io/client-go/util/jsonpath"` to the imports.
+
+Write these three tests in `reconciler_test.go` first, and watch them fail:
+
+```go
+func TestFieldPath(t *testing.T) {
+	got := fieldPath(".status.primary")
+	if len(got) != 2 || got[0] != "status" || got[1] != "primary" {
+		t.Errorf("fieldPath = %v, want [status primary]", got)
+	}
+}
+
+func TestSyncStatus_AbsentSourceLeavesTheFieldUnset(t *testing.T) {
+	// Build a Reconciler over a fake client with no CNPG Cluster present, call
+	// readStatusFrom, and assert it returns "" and a nil error. A release that
+	// has not created its Cluster yet is early, not an error, and returning one
+	// would put the CR permanently in a failed state while it is merely starting.
+}
+
+func TestReadStatusFrom_ReadsTheLabelledObject(t *testing.T) {
+	// Seed a fake client with an unstructured postgresql.cnpg.io/v1 Cluster in
+	// tenant-acme carrying both service labels and
+	// .status.currentPrimary = "db-1", then assert readStatusFrom returns "db-1".
+	// Use fake.NewClientBuilder().WithScheme(s).WithObjects(...) with the GVK
+	// registered via s.AddKnownTypeWithName, following whatever pattern
+	// internal/controller/tenant's tests already use for fake clients.
+}
+```
+
+Fill in the two commented bodies as real tests before implementing — they are described rather than written out because the fake-client setup must match the pattern already in this repo, which you should read first.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `make test-integration 2>&1 | grep -E "controller/service|FAIL"`
+Run: `go test ./internal/controller/service/... -v`
 Expected: PASS.
 
 - [ ] **Step 5: Add to the coverage floor, verify and commit**
