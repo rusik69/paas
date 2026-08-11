@@ -104,40 +104,40 @@ func convert(doc map[string]any, path string) (*apiextensionsv1.JSONSchemaProps,
 	}
 
 	out := &apiextensionsv1.JSONSchemaProps{Type: typ}
-	if d, ok := doc["description"].(string); ok {
-		out.Description = d
-	}
-	if n, ok := doc["minimum"].(float64); ok {
-		out.Minimum = &n
-	}
-	if n, ok := doc["maximum"].(float64); ok {
-		out.Maximum = &n
-	}
-	if s, ok := doc["pattern"].(string); ok {
-		out.Pattern = s
-	}
-	if s, ok := doc["format"].(string); ok {
-		out.Format = s
-	}
-	if s, ok := doc["title"].(string); ok {
-		out.Title = s
-	}
-	if b, ok := doc["uniqueItems"].(bool); ok {
-		out.UniqueItems = b
-	}
-	if b, ok := doc["exclusiveMinimum"].(bool); ok {
-		out.ExclusiveMinimum = b
-	}
-	if b, ok := doc["exclusiveMaximum"].(bool); ok {
-		out.ExclusiveMaximum = b
-	}
-	if b, ok := doc["nullable"].(bool); ok {
-		out.Nullable = b
-	}
-	if n, ok := doc["multipleOf"].(float64); ok {
-		out.MultipleOf = &n
-	}
 	var err error
+	if out.Description, err = stringField(doc, "description", path); err != nil {
+		return nil, err
+	}
+	if out.Pattern, err = stringField(doc, "pattern", path); err != nil {
+		return nil, err
+	}
+	if out.Format, err = stringField(doc, "format", path); err != nil {
+		return nil, err
+	}
+	if out.Title, err = stringField(doc, "title", path); err != nil {
+		return nil, err
+	}
+	if out.UniqueItems, err = boolField(doc, "uniqueItems", path); err != nil {
+		return nil, err
+	}
+	if out.ExclusiveMinimum, err = boolField(doc, "exclusiveMinimum", path); err != nil {
+		return nil, err
+	}
+	if out.ExclusiveMaximum, err = boolField(doc, "exclusiveMaximum", path); err != nil {
+		return nil, err
+	}
+	if out.Nullable, err = boolField(doc, "nullable", path); err != nil {
+		return nil, err
+	}
+	if out.Minimum, err = floatField(doc, "minimum", path); err != nil {
+		return nil, err
+	}
+	if out.Maximum, err = floatField(doc, "maximum", path); err != nil {
+		return nil, err
+	}
+	if out.MultipleOf, err = floatField(doc, "multipleOf", path); err != nil {
+		return nil, err
+	}
 	if out.MaxLength, err = intField(doc, "maxLength", path); err != nil {
 		return nil, err
 	}
@@ -199,7 +199,11 @@ func convert(doc map[string]any, path string) (*apiextensionsv1.JSONSchemaProps,
 		}
 	}
 
-	if props, ok := doc["properties"].(map[string]any); ok {
+	if v, ok := doc["properties"]; ok {
+		props, ok := v.(map[string]any)
+		if !ok {
+			return nil, &UnrepresentableError{Path: path, Reason: "properties must be an object"}
+		}
 		out.Properties = map[string]apiextensionsv1.JSONSchemaProps{}
 		names := make([]string, 0, len(props))
 		for k := range props {
@@ -219,7 +223,14 @@ func convert(doc map[string]any, path string) (*apiextensionsv1.JSONSchemaProps,
 		}
 	}
 
-	if items, ok := doc["items"].(map[string]any); ok {
+	if v, ok := doc["items"]; ok {
+		items, ok := v.(map[string]any)
+		if !ok {
+			if _, isTuple := v.([]any); isTuple {
+				return nil, &UnrepresentableError{Path: path, Reason: "tuple-form items is not expressible in a structural schema"}
+			}
+			return nil, &UnrepresentableError{Path: path, Reason: "items must be an object"}
+		}
 		conv, err := convert(items, prefix+".items")
 		if err != nil {
 			return nil, err
@@ -261,4 +272,47 @@ func intField(doc map[string]any, key, path string) (*int64, error) {
 	}
 	i := int64(n)
 	return &i, nil
+}
+
+// floatField reads a number-valued keyword. A present value of the wrong
+// type is rejected rather than left unset, so the constraint it names is
+// never silently dropped.
+func floatField(doc map[string]any, key, path string) (*float64, error) {
+	v, ok := doc[key]
+	if !ok {
+		return nil, nil
+	}
+	n, ok := v.(float64)
+	if !ok {
+		return nil, &UnrepresentableError{Path: path, Reason: key + " must be a number"}
+	}
+	return &n, nil
+}
+
+// stringField reads a string-valued keyword, rejecting a present value of
+// the wrong type instead of leaving it unset.
+func stringField(doc map[string]any, key, path string) (string, error) {
+	v, ok := doc[key]
+	if !ok {
+		return "", nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", &UnrepresentableError{Path: path, Reason: key + " must be a string"}
+	}
+	return s, nil
+}
+
+// boolField reads a boolean-valued keyword, rejecting a present value of
+// the wrong type instead of leaving it unset.
+func boolField(doc map[string]any, key, path string) (bool, error) {
+	v, ok := doc[key]
+	if !ok {
+		return false, nil
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return false, &UnrepresentableError{Path: path, Reason: key + " must be a bool"}
+	}
+	return b, nil
 }

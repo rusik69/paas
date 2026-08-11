@@ -227,6 +227,125 @@ func TestConvert_Rejects(t *testing.T) {
 	}
 }
 
+func TestConvert_RejectsWrongShapedValues(t *testing.T) {
+	cases := []struct {
+		name, json, wantPath, wantReason string
+	}{
+		{
+			name:       "tuple-form items",
+			json:       `{"type":"object","properties":{"a":{"type":"array","items":[{"type":"string"}]}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "not expressible",
+		},
+		{
+			name:       "properties as an array",
+			json:       `{"type":"object","properties":["a"]}`,
+			wantPath:   ".",
+			wantReason: "properties must be an object",
+		},
+		{
+			name:       "additionalProperties as a number",
+			json:       `{"type":"object","additionalProperties":5}`,
+			wantPath:   ".",
+			wantReason: "additionalProperties must be an object schema",
+		},
+		{
+			name:       "format as a number",
+			json:       `{"type":"object","properties":{"a":{"type":"string","format":5}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "format must be a string",
+		},
+		{
+			name:       "title as a number",
+			json:       `{"type":"object","properties":{"a":{"type":"string","title":123}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "title must be a string",
+		},
+		{
+			name:       "description as a number",
+			json:       `{"type":"object","description":7}`,
+			wantPath:   ".",
+			wantReason: "description must be a string",
+		},
+		{
+			name:       "uniqueItems as a string",
+			json:       `{"type":"object","properties":{"a":{"type":"array","uniqueItems":"yes"}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "uniqueItems must be a bool",
+		},
+		{
+			name:       "nullable as a number",
+			json:       `{"type":"object","properties":{"a":{"type":"string","nullable":1}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "nullable must be a bool",
+		},
+		{
+			name:       "minimum as a string",
+			json:       `{"type":"object","properties":{"a":{"type":"integer","minimum":"1"}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "minimum must be a number",
+		},
+		{
+			name:       "maximum as a string",
+			json:       `{"type":"object","properties":{"a":{"type":"integer","maximum":"1"}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "maximum must be a number",
+		},
+		{
+			name:       "pattern as a number",
+			json:       `{"type":"object","properties":{"a":{"type":"string","pattern":7}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "pattern must be a string",
+		},
+		{
+			name:       "multipleOf as a string",
+			json:       `{"type":"object","properties":{"a":{"type":"integer","multipleOf":"2"}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "multipleOf must be a number",
+		},
+		{
+			name:       "exclusiveMinimum as a number",
+			json:       `{"type":"object","properties":{"a":{"type":"integer","exclusiveMinimum":1}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "exclusiveMinimum must be a bool",
+		},
+		{
+			name:       "exclusiveMaximum as a number",
+			json:       `{"type":"object","properties":{"a":{"type":"integer","exclusiveMaximum":1}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "exclusiveMaximum must be a bool",
+		},
+		{
+			name:       "items neither object nor tuple",
+			json:       `{"type":"object","properties":{"a":{"type":"array","items":5}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "items must be an object",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Convert([]byte(tc.json))
+			if err == nil {
+				t.Fatalf("Convert succeeded and returned %+v — a wrong-shaped value must not be silently skipped", got)
+			}
+			if got != nil {
+				t.Error("Convert returned a schema alongside its error; a partial schema is the failure mode this exists to prevent")
+			}
+			var ue *UnrepresentableError
+			if !errors.As(err, &ue) {
+				t.Fatalf("err = %v, want an *UnrepresentableError naming the path", err)
+			}
+			if ue.Path != tc.wantPath {
+				t.Errorf("Path = %q, want %q", ue.Path, tc.wantPath)
+			}
+			if !strings.Contains(ue.Reason, tc.wantReason) {
+				t.Errorf("Reason = %q, want it to mention %q", ue.Reason, tc.wantReason)
+			}
+		})
+	}
+}
+
 func TestConvert_CarriesFieldConstraints(t *testing.T) {
 	got, err := Convert([]byte(`{
 		"type": "object",
