@@ -102,7 +102,8 @@ that rolling back restores it.)*
   *(Landed: per-namespace default-deny at every depth plus a per-pod
   `policy.paas.io/allow-to-apiserver` opt-in. Enforcement is asserted on the cluster, not in
   envtest — a fixture CRD there only proves the objects were written.)*
-- OIDC provider (Keycloak or Dex), group→RBAC binding, generated kubeconfig Secret.
+- OIDC provider (Keycloak, per [ADR 0005](adr/0005-keycloak-as-the-identity-provider.md)),
+  group→RBAC binding, generated kubeconfig Secret.
   *(Landed: `tenant-admin`/`tenant-viewer` bound to the tenant's OIDC group and to every
   ancestor's admins, plus a namespace-pinned CI kubeconfig proven usable in e2e. Keycloak and
   its CloudNativePG database are delivered by the platform, and the API server trusts it: a
@@ -119,7 +120,8 @@ that rolling back restores it.)*
 negative network test proves cross-tenant traffic and pod→apiserver access both fail.
 *(Met by `TestTenancy_NestedTenantsAreIsolatedAndInheritModules`, with positive controls —
 same-namespace traffic and the opt-in label — so the denials cannot pass by everything being
-unreachable. OIDC, RBAC bindings and the kubeconfig Secret are still outstanding.)*
+unreachable. OIDC, the RBAC bindings and the kubeconfig Secret have since landed too, the last
+of them proven by `TestKeycloak_TokenAuthenticatesAndMapsToTheTenantRole`.)*
 
 ### Phase 3 — Managed services
 
