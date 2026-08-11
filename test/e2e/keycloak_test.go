@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -185,9 +186,10 @@ func TestKeycloak_TokenAuthenticatesAndMapsToTheTenantRole(t *testing.T) {
 // keycloakToken fetches an access token by password grant, from inside the
 // cluster, and hands it back through a ConfigMap.
 //
-// In-cluster because that is where the issuer is reachable: it binds the
-// control-plane node's host network, which pods route to and a developer's
-// laptop does not.
+// From inside the cluster because that is where the platform's own clients will
+// ask — the dashboard in phase 4 among them. The issuer binds the control-plane
+// node's host network, so a pod reaches it by a routable node address rather
+// than through anything Cilium has to translate.
 func keycloakToken(t *testing.T) string {
 	t.Helper()
 
@@ -199,12 +201,16 @@ func keycloakToken(t *testing.T) string {
 	// bring-up, which this pod has no copy of. What the certificate proves is
 	// asserted where it matters — the API server validates it against the CA it
 	// was configured with, and that is what the rest of this test exercises.
+	//
+	// The response comes back whole and is parsed below rather than sliced up
+	// here. A sed that reaches for access_token leaves an error response almost
+	// intact, and the fragment it yields is a non-empty string that no check
+	// short of parsing recognises as not being a token — which is how "Account
+	// is not fully set up" once arrived as a bare 401 from the API server.
 	script := fmt.Sprintf(
-		`set -e; curl -sk -X POST `+
+		`curl -sk -X POST `+
 			`-d 'grant_type=password' -d 'client_id=%s' -d 'username=%s' -d 'password=%s' `+
-			`%s/protocol/openid-connect/token `+
-			`| sed 's/.*"access_token":"//; s/".*//' > /tmp/t; `+
-			`test -s /tmp/t; cat /tmp/t`,
+			`%s/protocol/openid-connect/token`,
 		oidcClientID, oidcTestUser, oidcTestPassword, oidcIssuerURL)
 
 	pod := &corev1.Pod{
@@ -229,13 +235,24 @@ func keycloakToken(t *testing.T) string {
 	logs, err := clientset.CoreV1().Pods(ns).GetLogs("token", &corev1.PodLogOptions{}).
 		DoRaw(t.Context())
 	if err != nil {
-		t.Fatalf("read the token: %v", err)
+		t.Fatalf("read the token response: %v", err)
 	}
-	token := strings.TrimSpace(string(logs))
-	if token == "" || strings.Contains(token, "error") {
-		t.Fatalf("Keycloak returned no usable token: %q", token)
+
+	var body struct {
+		AccessToken      string `json:"access_token"`
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
 	}
-	return token
+	if err := json.Unmarshal(logs, &body); err != nil {
+		t.Fatalf("Keycloak's token response is not JSON: %v (%q)", err, strings.TrimSpace(string(logs)))
+	}
+	if body.Error != "" {
+		t.Fatalf("Keycloak refused to issue a token: %s: %s", body.Error, body.ErrorDescription)
+	}
+	if body.AccessToken == "" {
+		t.Fatalf("Keycloak's token response carries no access_token: %q", strings.TrimSpace(string(logs)))
+	}
+	return body.AccessToken
 }
 
 // curlImageRef returns the pinned curl image.

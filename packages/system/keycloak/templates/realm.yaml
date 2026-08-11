@@ -14,6 +14,10 @@
       audience does not contain its --oidc-client-id. Without this the token is
       issued, presented, and refused with a bare 401 that says nothing about
       why.
+    - the fixture user's profile. Keycloak's declarative user profile requires
+      an email and a name, and gives a user without them a VERIFY_PROFILE
+      required action. The password grant then refuses with "Account is not
+      fully set up" rather than saying which field is missing.
 */ -}}
 apiVersion: v1
 kind: ConfigMap
@@ -66,8 +70,12 @@ data:
           "username": {{ .Values.oidc.testUser | quote }},
           "enabled": true,
           "emailVerified": true,
+          "email": {{ printf "%s@example.test" .Values.oidc.testUser | quote }},
+          "firstName": {{ .Values.oidc.testUser | quote }},
+          "lastName": "Fixture",
           "credentials": [
-            {"type": "password", "value": {{ .Values.oidc.testPassword | quote }}}
+            {"type": "password", "value": {{ .Values.oidc.testPassword | quote }},
+             "temporary": false}
           ],
           "groups": ["/paas:tenant:acme"]
         }
