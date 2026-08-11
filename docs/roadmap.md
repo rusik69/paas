@@ -104,11 +104,14 @@ that rolling back restores it.)*
   envtest — a fixture CRD there only proves the objects were written.)*
 - OIDC provider (Keycloak or Dex), group→RBAC binding, generated kubeconfig Secret.
   *(Landed: `tenant-admin`/`tenant-viewer` bound to the tenant's OIDC group and to every
-  ancestor's admins, plus a namespace-pinned CI kubeconfig proven usable in e2e. The provider
-  Keycloak and its CloudNativePG database are delivered by the platform and proven up. What
-  remains is making the API server trust it, designed in
-  [the OIDC spec](superpowers/specs/2026-08-10-phase-2-apiserver-oidc-design.md) and not yet
-  built. The CI token is long-lived rather than bound — a refresh loop is unwritten.)*
+  ancestor's admins, plus a namespace-pinned CI kubeconfig proven usable in e2e. Keycloak and
+  its CloudNativePG database are delivered by the platform, and the API server trusts it: a
+  token issued to a user in `paas:tenant:acme` reads that tenant's namespace and gets a 403 from
+  `kube-system`, asserted by `TestKeycloak_TokenAuthenticatesAndMapsToTheTenantRole`. The issuer
+  binds the control-plane node's host network, because the kube-apiserver static pod cannot
+  reach a Service of any type — see
+  [the OIDC spec](superpowers/specs/2026-08-10-phase-2-apiserver-oidc-design.md). The CI token
+  is long-lived rather than bound — a refresh loop is unwritten.)*
 - Module enable/inherit resolution up the ancestor chain.
   *(Landed: `tenancy.Resolve`. The modules themselves are phase-3 packaging work.)*
 

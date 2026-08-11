@@ -1,6 +1,7 @@
 # Phase 2, part 3 — making the API server trust Keycloak
 
-- **Status:** proposed, not implemented
+- **Status:** implemented and proven by
+  `TestKeycloak_TokenAuthenticatesAndMapsToTheTenantRole`, 2026-08-11
 - **Date:** 2026-08-10
 - **Covers:** the last of roadmap phase 2 — the OIDC provider actually being an
   authentication source, rather than a running pod
@@ -138,6 +139,35 @@ The Cilium-settings check the previous round suggested (`socketLB`, `bpf-lb-sock
 was not run: it would only have salvaged a Service-based issuer, and the host-network shape
 removes the Service rather than fixing translation for it. If the static pod's exclusion from
 socket load balancing ever matters for something else, that is where to start.
+
+**It worked, and the API server's own logs are what say so.** `connect: operation not
+permitted` became `connect: connection refused` — a plain TCP refusal, because Keycloak had not
+bound the port yet — and then stopped entirely the second Keycloak began listening. Three more
+failures stood between that and a passing test, each of which the API server reported as the
+same bare 401:
+
+- **PodSecurity.** Talos enforces `baseline` cluster-wide and baseline forbids `hostNetwork`, so
+  the StatefulSet controller could not create the pod at all. It said so on the StatefulSet,
+  where nothing was looking. `paas-system` now sets `enforce: privileged` and keeps `warn` and
+  `audit` at `restricted`.
+- **The fixture user had no profile.** Keycloak's declarative user profile wants an email and a
+  name, and gives a user without them a `VERIFY_PROFILE` required action; the password grant then
+  refuses with "Account is not fully set up".
+- **And the test could not tell that refusal from a token**, because the `sed` pulling
+  `access_token` out of the response left the error JSON nearly intact, yielding a bare `{` —
+  non-empty, containing no "error", and duly presented to the API server. The response is parsed
+  now.
+
+Two operational findings came with it. Keycloak is a second JVM on the control-plane node, and
+at four gigabytes it was OOM-killed during its own startup — which surfaced as a HelmRelease
+that reinstalled itself forever, since each five-minute install timeout rolled back and
+bootstrapped the database again. The node is six gigabytes now and Keycloak carries a memory
+limit, so its heap is sized against a bound rather than against everything it can see.
+
+A side effect worth knowing: because the issuer binds a node address on the libvirt bridge, a
+developer on the host can reach it directly — `curl -k https://10.77.0.11:8443/realms/paas/.well-known/openid-configuration`
+works from outside the cluster, which no Service-based shape allowed. It is still not the
+production shape; that publishes the issuer through the Gateway with a real certificate.
 
 ## Risks
 
