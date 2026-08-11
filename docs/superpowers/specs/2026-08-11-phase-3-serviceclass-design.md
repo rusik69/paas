@@ -1,6 +1,8 @@
 # Phase 3, part 1 — ServiceClass, the generated CRD, and the HelmRelease behind it
 
-- **Status:** approved, not implemented
+- **Status:** implemented and proven by `TestService_PostgresBecomesReadyAndReportsItsPrimary`,
+  `TestService_OffSchemaFieldIsRejectedWithItsOwnMessage` and
+  `TestService_DeleteReclaimsEverything`, 2026-08-11
 - **Date:** 2026-08-11
 - **Covers:** the machinery of roadmap phase 3, proven with one catalog entry — `postgres`.
   `redis` and `bucket` are deliberately out of scope; see [Scope](#scope).
@@ -154,6 +156,15 @@ That is what lets a status watch on an arbitrary underlying kind — a CNPG `Clu
 create and do not own — map back to the CR whose status it belongs in, without inventing owner
 references across a boundary Helm controls.
 
+**A chart whose workload needs the API server must opt itself in.** Phase 2's tenant default-deny
+policy blocks pod→apiserver unless the pod carries `policy.paas.io/allow-to-apiserver: "true"`
+(architecture.md §4), and the catalog is not exempt from it — a service's own workload is a
+tenant workload. The chart, not the platform, has to set the label, typically by threading it
+through the wrapped operator's own pod-template metadata (CNPG's `spec.inheritedMetadata`, for
+example). Nothing else notices a chart that omits this: the release installs, the underlying
+object appears, and the workload it starts hangs forever unable to reach the control plane. See
+[Findings](#findings) for how `postgres` was caught missing it.
+
 ## Failing closed on the schema
 
 Kubernetes structural schemas are a subset of JSON Schema. `$ref`, `definitions` and
@@ -222,17 +233,42 @@ Across the three tiers in [testing.md](../../testing.md).
 
 New packages join `COVERED_PACKAGES`.
 
+## Findings
+
+**PVC reclaim is verified, not assumed (confirmed 2026-08-11).** The last link in the ownership
+chain — CNPG deleting PVCs when its `Cluster` is deleted — was checked against a running
+cluster rather than left as a claim. A CNPG-created PVC carries `ownerReferences` naming its
+`Cluster`; deleting the `Cluster` removed the PVC within 35 seconds; no `PersistentVolume` was
+left orphaned; and the `replicated-3` `StorageClass` sets `reclaimPolicy: Delete`, so nothing
+downstream of the PVC is retained either. `TestService_DeleteReclaimsEverything` asserts this on
+the cluster and keeps asserting it going forward.
+
+**The schema boundary was proven live, in both directions.** An undeclared `spec.image` is
+rejected by strict decoding, by name, before it ever reaches the API server's storage layer.
+With that decoding bypassed — simulating a client willing to send whatever it likes — the field
+is instead **pruned server-side**: the stored `spec` came back as exactly `{"instances": 1}`,
+never `{"instances": 1, "image": ...}`. An undeclared field cannot reach Helm values by any
+path this test found. Separately, an out-of-range value is refused with the API server's own
+message, `spec.instances in body should be less than or equal to 3`, not a generic error.
+`TestService_OffSchemaFieldIsRejectedWithItsOwnMessage` covers both directions in one test with
+three subtests. This is the [load-bearing idea](#the-load-bearing-idea) demonstrated rather than
+argued: the generated schema is where a tenant's write is actually stopped, not merely where the
+design says it should be.
+
+**A chart whose workload needs the API server must opt in, and nothing told chart authors so.**
+`postgres` never set `policy.paas.io/allow-to-apiserver` on CNPG's instance-manager pods, so
+phase 2's tenant default-deny policy blocked them from the control plane and `initdb` failed
+forever with no condition pointing at the cause — the release had installed and the `Cluster`
+object existed; only the pod it started was stuck. Fixed by setting the label through CNPG's
+`spec.inheritedMetadata`. This is a property of the catalog contract, not of `postgres`
+specifically, which is why [Chart contract](#chart-contract) above now states it as a
+requirement rather than leaving it as something `postgres` happened to need.
+
 ## Risks
 
 **Schema fidelity is the whole security boundary.** Everything above about failing closed exists
 because of this. It is first because it is the only risk here whose failure mode is silent and
 exploitable rather than noisy and annoying.
-
-**PVC reclaim is claimed and not yet known.** The roadmap's done-when asserts deleting the CR
-reclaims everything, and the last link — CNPG deleting PVCs with its `Cluster` — is an
-assumption about someone else's operator. Verify it against a running cluster in the first
-session that has one, not at the end. If it does not hold, the chart or the reconciler grows a
-step, and it is much cheaper to learn that before the reconciler is written than after.
 
 **The engine can leak informers.** A stopped kind whose informer stays in the shared cache keeps
 watching a resource that may no longer exist, and the cost is invisible until there are enough of

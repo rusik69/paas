@@ -144,6 +144,13 @@ to get wrong:
   reports it as a GatewayClass reconcile error.
 - **Do not build phase 6 before phase 5.** VMs are the most seductive and least
   differentiating piece of the platform.
+- **`make operator-up` does not roll the running pod.** It rebuilds and pushes
+  the operator image under a fixed tag with `imagePullPolicy: IfNotPresent`, so
+  the Deployment spec never changes and nothing tells the kubelet to re-pull.
+  An operator pod has survived three `operator-up` runs unchanged, silently
+  running old code and invalidating whatever it was meant to verify. After any
+  operator change: `kubectl rollout restart deploy/paas-operator`. Worth
+  fixing in `hack/`, but that is a provisioning change and out of scope here.
 
 ## Working agreements
 
