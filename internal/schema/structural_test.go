@@ -142,6 +142,66 @@ func TestConvert_Rejects(t *testing.T) {
 			wantPath:   ".properties.a.items",
 			wantReason: "type",
 		},
+		{
+			name:       "additionalProperties alongside properties",
+			json:       `{"type":"object","properties":{"a":{"type":"string"}},"additionalProperties":{"type":"string"}}`,
+			wantPath:   ".",
+			wantReason: "additionalProperties",
+		},
+		{
+			name:       "unrecognised keyword",
+			json:       `{"type":"object","properties":{"a":{"type":"string","deprecated":true}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "deprecated",
+		},
+		{
+			name:       "non-integral maxLength",
+			json:       `{"type":"object","properties":{"a":{"type":"string","maxLength":5.5}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "maxLength",
+		},
+		{
+			name:       "minLength is not a number",
+			json:       `{"type":"object","properties":{"a":{"type":"string","minLength":"x"}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "minLength must be a number",
+		},
+		{
+			name:       "non-integral maxItems",
+			json:       `{"type":"object","properties":{"a":{"type":"array","maxItems":2.5}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "maxItems",
+		},
+		{
+			name:       "non-integral minItems",
+			json:       `{"type":"object","properties":{"a":{"type":"array","minItems":2.5}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "minItems",
+		},
+		{
+			name:       "non-integral maxProperties",
+			json:       `{"type":"object","properties":{"a":{"type":"object","maxProperties":2.5}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "maxProperties",
+		},
+		{
+			name:       "non-integral minProperties",
+			json:       `{"type":"object","properties":{"a":{"type":"object","minProperties":2.5}}}`,
+			wantPath:   ".properties.a",
+			wantReason: "minProperties",
+		},
+		{
+			name:       "additionalProperties is not an object schema",
+			json:       `{"type":"object","additionalProperties":true}`,
+			wantPath:   ".",
+			wantReason: "additionalProperties must be an object schema",
+		},
+		{
+			name:       "additionalProperties inner error propagates",
+			json:       `{"type":"object","additionalProperties":{"minimum":1}}`,
+			wantPath:   ".additionalProperties",
+			wantReason: "type",
+		},
 	}
 
 	for _, tc := range cases {
@@ -213,6 +273,115 @@ func TestConvert_ItemsAreConverted(t *testing.T) {
 	}
 	if tags.Items.Schema.Type != "string" {
 		t.Errorf("Items.Schema.Type = %q, want string", tags.Items.Schema.Type)
+	}
+}
+
+func TestConvert_MaxLengthSurvivesRoundTrip(t *testing.T) {
+	got, err := Convert([]byte(`{"type":"object","properties":{"a":{"type":"string","maxLength":5}}}`))
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	a := got.Properties["a"]
+	if a.MaxLength == nil || *a.MaxLength != 5 {
+		t.Error("maxLength was not carried across — a dropped constraint is an unvalidated field")
+	}
+}
+
+func TestConvert_CarriesRemainingConstraints(t *testing.T) {
+	got, err := Convert([]byte(`{
+		"type": "object",
+		"properties": {
+			"a": {
+				"type": "string",
+				"minLength": 1,
+				"format": "hostname",
+				"title": "A",
+				"nullable": true
+			},
+			"b": {
+				"type": "array",
+				"minItems": 1,
+				"maxItems": 3,
+				"uniqueItems": true
+			},
+			"c": {
+				"type": "object",
+				"minProperties": 1,
+				"maxProperties": 5
+			},
+			"d": {
+				"type": "integer",
+				"multipleOf": 2,
+				"exclusiveMinimum": true,
+				"exclusiveMaximum": true
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	a := got.Properties["a"]
+	if a.MinLength == nil || *a.MinLength != 1 {
+		t.Error("minLength was not carried across")
+	}
+	if a.Format != "hostname" {
+		t.Errorf("Format = %q, want hostname", a.Format)
+	}
+	if a.Title != "A" {
+		t.Errorf("Title = %q, want A", a.Title)
+	}
+	if !a.Nullable {
+		t.Error("nullable was not carried across")
+	}
+
+	b := got.Properties["b"]
+	if b.MinItems == nil || *b.MinItems != 1 {
+		t.Error("minItems was not carried across")
+	}
+	if b.MaxItems == nil || *b.MaxItems != 3 {
+		t.Error("maxItems was not carried across")
+	}
+	if !b.UniqueItems {
+		t.Error("uniqueItems was not carried across")
+	}
+
+	c := got.Properties["c"]
+	if c.MinProperties == nil || *c.MinProperties != 1 {
+		t.Error("minProperties was not carried across")
+	}
+	if c.MaxProperties == nil || *c.MaxProperties != 5 {
+		t.Error("maxProperties was not carried across")
+	}
+
+	d := got.Properties["d"]
+	if d.MultipleOf == nil || *d.MultipleOf != 2 {
+		t.Error("multipleOf was not carried across")
+	}
+	if !d.ExclusiveMinimum {
+		t.Error("exclusiveMinimum was not carried across")
+	}
+	if !d.ExclusiveMaximum {
+		t.Error("exclusiveMaximum was not carried across")
+	}
+}
+
+func TestConvert_AdditionalPropertiesWithoutPropertiesConverts(t *testing.T) {
+	got, err := Convert([]byte(`{"type":"object","additionalProperties":{"type":"string"}}`))
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	if got.AdditionalProperties == nil || got.AdditionalProperties.Schema == nil {
+		t.Fatal("AdditionalProperties was not set")
+	}
+	if got.AdditionalProperties.Schema.Type != "string" {
+		t.Errorf("AdditionalProperties.Schema.Type = %q, want string", got.AdditionalProperties.Schema.Type)
+	}
+}
+
+func TestConvert_SchemaKeywordAtRootIsIgnored(t *testing.T) {
+	_, err := Convert([]byte(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object"}`))
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
 	}
 }
 

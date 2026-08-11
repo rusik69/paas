@@ -10,6 +10,27 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
+// isKnownKey reports whether convert understands a JSON Schema keyword,
+// either by extracting it or by rejecting it outright (the banned and
+// combinator keys, handled before this is consulted). A keyword that is
+// present in a document but not recognised here is what would otherwise be
+// silently dropped — this is what keeps the converter fail-closed.
+func isKnownKey(key string) bool {
+	switch key {
+	case "$ref", "definitions", "$defs", "patternProperties", "not", "dependencies",
+		"oneOf", "anyOf", "allOf",
+		"type", "description", "minimum", "maximum", "pattern",
+		"enum", "default", "required", "properties", "items",
+		"maxLength", "minLength", "minItems", "maxItems",
+		"minProperties", "maxProperties", "uniqueItems", "multipleOf",
+		"exclusiveMinimum", "exclusiveMaximum", "format", "title",
+		"nullable", "additionalProperties":
+		return true
+	default:
+		return false
+	}
+}
+
 // UnrepresentableError reports a schema Kubernetes structural schemas cannot
 // express, and where in the document it is.
 type UnrepresentableError struct {
@@ -95,6 +116,60 @@ func convert(doc map[string]any, path string) (*apiextensionsv1.JSONSchemaProps,
 	if s, ok := doc["pattern"].(string); ok {
 		out.Pattern = s
 	}
+	if s, ok := doc["format"].(string); ok {
+		out.Format = s
+	}
+	if s, ok := doc["title"].(string); ok {
+		out.Title = s
+	}
+	if b, ok := doc["uniqueItems"].(bool); ok {
+		out.UniqueItems = b
+	}
+	if b, ok := doc["exclusiveMinimum"].(bool); ok {
+		out.ExclusiveMinimum = b
+	}
+	if b, ok := doc["exclusiveMaximum"].(bool); ok {
+		out.ExclusiveMaximum = b
+	}
+	if b, ok := doc["nullable"].(bool); ok {
+		out.Nullable = b
+	}
+	if n, ok := doc["multipleOf"].(float64); ok {
+		out.MultipleOf = &n
+	}
+	var err error
+	if out.MaxLength, err = intField(doc, "maxLength", path); err != nil {
+		return nil, err
+	}
+	if out.MinLength, err = intField(doc, "minLength", path); err != nil {
+		return nil, err
+	}
+	if out.MaxItems, err = intField(doc, "maxItems", path); err != nil {
+		return nil, err
+	}
+	if out.MinItems, err = intField(doc, "minItems", path); err != nil {
+		return nil, err
+	}
+	if out.MaxProperties, err = intField(doc, "maxProperties", path); err != nil {
+		return nil, err
+	}
+	if out.MinProperties, err = intField(doc, "minProperties", path); err != nil {
+		return nil, err
+	}
+	if av, ok := doc["additionalProperties"]; ok {
+		if _, hasProps := doc["properties"]; hasProps {
+			return nil, &UnrepresentableError{Path: path, Reason: "additionalProperties may not appear alongside properties"}
+		}
+		sub, ok := av.(map[string]any)
+		if !ok {
+			return nil, &UnrepresentableError{Path: path, Reason: "additionalProperties must be an object schema"}
+		}
+		conv, err := convert(sub, prefix+".additionalProperties")
+		if err != nil {
+			return nil, err
+		}
+		out.AdditionalProperties = &apiextensionsv1.JSONSchemaPropsOrBool{Allows: true, Schema: conv}
+	}
 	if v, ok := doc["enum"]; ok {
 		items, ok := v.([]any)
 		if !ok {
@@ -152,5 +227,38 @@ func convert(doc map[string]any, path string) (*apiextensionsv1.JSONSchemaProps,
 		out.Items = &apiextensionsv1.JSONSchemaPropsOrArray{Schema: conv}
 	}
 
+	keys := make([]string, 0, len(doc))
+	for k := range doc {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if path == "." && k == "$schema" {
+			continue
+		}
+		if !isKnownKey(k) {
+			return nil, &UnrepresentableError{Path: path, Reason: fmt.Sprintf("%q is not a recognised schema keyword", k)}
+		}
+	}
+
 	return out, nil
+}
+
+// intField reads an integer-valued keyword from a decoded JSON document.
+// JSON numbers decode as float64, so a non-integral value is rejected rather
+// than silently truncated.
+func intField(doc map[string]any, key, path string) (*int64, error) {
+	v, ok := doc[key]
+	if !ok {
+		return nil, nil
+	}
+	n, ok := v.(float64)
+	if !ok {
+		return nil, &UnrepresentableError{Path: path, Reason: key + " must be a number"}
+	}
+	if n != float64(int64(n)) {
+		return nil, &UnrepresentableError{Path: path, Reason: key + " must be an integer"}
+	}
+	i := int64(n)
+	return &i, nil
 }
