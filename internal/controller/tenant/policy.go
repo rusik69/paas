@@ -2,6 +2,8 @@ package tenant
 
 import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	pkgctl "github.com/rusik69/paas/internal/controller/pkg"
 )
 
 // Cilium's policy API, referenced rather than imported: CiliumNetworkPolicy is
@@ -28,13 +30,13 @@ const (
 const AllowAPIServerLabel = "policy.paas.io/allow-to-apiserver"
 
 // defaultDenyPolicy confines every pod in the namespace to its own namespace,
-// plus cluster DNS.
+// plus cluster DNS and ingress from the platform namespace.
 //
 // Deny-by-default is a property of Cilium selecting the endpoint at all: once a
 // policy matches, everything not explicitly allowed is dropped. So the rules
-// below are the entire allow-list — same-namespace traffic and DNS — and
-// cross-tenant traffic and the API server are denied by their absence rather
-// than by a deny rule.
+// below are the entire allow-list — same-namespace traffic, the platform's
+// operators, and DNS — and cross-tenant traffic and the API server are denied
+// by their absence rather than by a deny rule.
 func defaultDenyPolicy(namespace, tenant string) *unstructured.Unstructured {
 	return &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": policyAPIVersion,
@@ -52,6 +54,20 @@ func defaultDenyPolicy(namespace, tenant string) *unstructured.Unstructured {
 				// Cilium, which is exactly the boundary a tenant is.
 				map[string]any{
 					"fromEndpoints": []any{map[string]any{}},
+				},
+				// The platform's operators run in paas-system and manage the
+				// workloads they provision for tenants: CNPG polls each Postgres
+				// instance's status endpoint in the tenant's own namespace, and
+				// every managed service added later needs the same reach. Without
+				// this the operator's probes time out and the service never
+				// becomes ready. Ingress only — nothing has needed a tenant pod to
+				// dial into paas-system, and this stays the narrower half.
+				map[string]any{
+					"fromEndpoints": []any{map[string]any{
+						"matchLabels": map[string]any{
+							"k8s:io.kubernetes.pod.namespace": pkgctl.TargetNamespace,
+						},
+					}},
 				},
 			},
 			"egress": []any{
