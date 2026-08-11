@@ -1,0 +1,23 @@
+{{- /*
+  The chart-contract labels are load-bearing: the service reconciler maps this
+  Cluster back to the Postgres CR whose status it belongs in by these labels
+  alone, not by an owner reference — see the "Chart contract" section of the
+  phase-3 design.
+*/ -}}
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    paas.io/service-name: {{ .Release.Name }}
+    paas.io/service-namespace: {{ .Release.Namespace }}
+spec:
+  instances: {{ .Values.instances }}
+  storage:
+    size: {{ .Values.storage.size | quote }}
+    storageClass: {{ .Values.storage.class | quote }}
+  resources:
+    requests:
+      cpu: {{ .Values.resources.cpu | quote }}
+      memory: {{ .Values.resources.memory | quote }}

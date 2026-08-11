@@ -2,6 +2,8 @@ package schema
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -526,5 +528,28 @@ func TestConvert_RootMustBeObject(t *testing.T) {
 	}
 	if ue.Path != "." {
 		t.Errorf("Path = %q, want .", ue.Path)
+	}
+}
+
+// TestConvert_PostgresChartSchema runs the actual published
+// packages/apps/postgres/values.schema.json through Convert. Without this, a
+// schema mistake in that file only surfaces once a ServiceClass tries to
+// generate a CRD from it on a running cluster.
+func TestConvert_PostgresChartSchema(t *testing.T) {
+	path := filepath.Join("..", "..", "packages", "apps", "postgres", "values.schema.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	got, err := Convert(raw)
+	if err != nil {
+		t.Fatalf("Convert(%s) rejected the postgres chart's schema: %v", path, err)
+	}
+
+	for _, name := range []string{"instances", "storage", "resources"} {
+		if _, ok := got.Properties[name]; !ok {
+			t.Errorf("converted schema has no %q property", name)
+		}
 	}
 }

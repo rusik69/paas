@@ -1,0 +1,9 @@
+apiVersion: v2
+name: catalog
+description: >-
+  ServiceClass objects and nothing else. Each entry turns a chart under
+  packages/apps/ into a tenant-facing kind; adding a service is a template
+  here plus a chart, never Go.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

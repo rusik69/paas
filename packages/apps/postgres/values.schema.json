@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "instances": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3,
+      "default": 2,
+      "description": "Number of Postgres instances. Two is the smallest that survives losing one."
+    },
+    "storage": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "string",
+          "pattern": "^[0-9]+(Mi|Gi)$",
+          "default": "1Gi",
+          "description": "Volume size per instance."
+        },
+        "class": {
+          "type": "string",
+          "enum": ["replicated-2", "replicated-3"],
+          "default": "replicated-3",
+          "description": "StorageClass. Both are DRBD-replicated; the number is the replica count."
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "cpu": {
+          "type": "string",
+          "pattern": "^[0-9]+m?$",
+          "default": "100m",
+          "description": "CPU request per instance."
+        },
+        "memory": {
+          "type": "string",
+          "pattern": "^[0-9]+(Mi|Gi)$",
+          "default": "256Mi",
+          "description": "Memory request per instance."
+        }
+      }
+    }
+  }
+}

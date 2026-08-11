@@ -35,3 +35,12 @@ packages:
     stage: component
     values:
       message: v1
+
+  # ServiceClass objects only, nothing else. A component, not a migration: it
+  # needs the Cluster CRD cnpg's migration stage installs, and being a
+  # component gets it the automatic dependsOn on every migration for free —
+  # see internal/controller/pkg.Reconciler.dependencies.
+  - name: catalog
+    chart: catalog
+    version: "0.1.0"
+    stage: component

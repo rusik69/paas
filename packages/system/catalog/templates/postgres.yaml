@@ -1,0 +1,19 @@
+apiVersion: platform.paas.io/v1alpha1
+kind: ServiceClass
+metadata:
+  name: postgres
+spec:
+  kind: Postgres
+  plural: postgreses
+  chart:
+    name: postgres
+    version: {{ .Values.postgres.version | quote }}
+  statusFrom:
+    - path: .status.primary
+      from:
+        apiVersion: postgresql.cnpg.io/v1
+        kind: Cluster
+      jsonPath: .status.currentPrimary
+  ui:
+    icon: postgres
+    category: databases
