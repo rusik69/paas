@@ -66,7 +66,18 @@ OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-kubernetes}"
 oidc_pki() {
 	local dir="${E2E_DIR}/oidc"
 	mkdir -p "$dir"
-	[[ -s "${dir}/ca.crt" && -s "${dir}/tls.crt" ]] && return 0
+	# Reused only if it is still for the address the issuer names. A certificate
+	# left over from a different one is worse than none: the API server reaches
+	# the issuer, rejects its certificate, and reports an authentication failure
+	# that looks like a bad token.
+	if [[ -s "${dir}/ca.crt" && -s "${dir}/tls.crt" ]]; then
+		if openssl x509 -in "${dir}/tls.crt" -noout -text 2>/dev/null |
+			grep -q "IP Address:${OIDC_HOST}\b"; then
+			return 0
+		fi
+		warn "OIDC certificate is not for ${OIDC_HOST}; regenerating"
+		rm -f "${dir}/ca.crt" "${dir}/ca.key" "${dir}/tls.crt" "${dir}/tls.key"
+	fi
 
 	step "generating OIDC PKI"
 	openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
