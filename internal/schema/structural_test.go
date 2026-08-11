@@ -1,11 +1,15 @@
 package schema
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 func TestConvert_PlainObject(t *testing.T) {
@@ -535,6 +539,14 @@ func TestConvert_RootMustBeObject(t *testing.T) {
 // packages/apps/postgres/values.schema.json through Convert. Without this, a
 // schema mistake in that file only surfaces once a ServiceClass tries to
 // generate a CRD from it on a running cluster.
+//
+// It checks more than field presence: a converter that silently dropped
+// instances.maximum, the storage.class enum, or a resource pattern would
+// leave every property named below in place while the CRD it produced no
+// longer enforced the bound behind it — exactly the failure mode "failing
+// closed on the schema" exists to prevent. So each constraint the chart
+// relies on as its security boundary is checked for the specific value it
+// must carry, not just for having survived at all.
 func TestConvert_PostgresChartSchema(t *testing.T) {
 	path := filepath.Join("..", "..", "packages", "apps", "postgres", "values.schema.json")
 	raw, err := os.ReadFile(path)
@@ -547,9 +559,58 @@ func TestConvert_PostgresChartSchema(t *testing.T) {
 		t.Fatalf("Convert(%s) rejected the postgres chart's schema: %v", path, err)
 	}
 
-	for _, name := range []string{"instances", "storage", "resources"} {
-		if _, ok := got.Properties[name]; !ok {
-			t.Errorf("converted schema has no %q property", name)
+	instances, ok := got.Properties["instances"]
+	if !ok {
+		t.Fatal("converted schema has no \"instances\" property")
+	}
+	if instances.Minimum == nil || *instances.Minimum != 1 {
+		t.Errorf("instances.Minimum = %v, want 1", instances.Minimum)
+	}
+	if instances.Maximum == nil || *instances.Maximum != 3 {
+		t.Errorf("instances.Maximum = %v, want 3 — a dropped ceiling here is a tenant scheduling as many instances as they like", instances.Maximum)
+	}
+
+	storage, ok := got.Properties["storage"]
+	if !ok {
+		t.Fatal("converted schema has no \"storage\" property")
+	}
+	class, ok := storage.Properties["class"]
+	if !ok {
+		t.Fatal("converted schema has no \"storage.class\" property")
+	}
+	if diff := cmp.Diff([]string{"replicated-2", "replicated-3"}, enumStrings(t, class.Enum)); diff != "" {
+		t.Errorf("storage.class enum diff (-want +got):\n%s", diff)
+	}
+	size, ok := storage.Properties["size"]
+	if !ok {
+		t.Fatal("converted schema has no \"storage.size\" property")
+	}
+	if want := `^([1-9][0-9]{0,2}Mi|[1-5]Gi)$`; size.Pattern != want {
+		t.Errorf("storage.size.Pattern = %q, want %q — a dropped bound lets a tenant ask for an unbounded volume", size.Pattern, want)
+	}
+
+	resources, ok := got.Properties["resources"]
+	if !ok {
+		t.Fatal("converted schema has no \"resources\" property")
+	}
+	if want := `^([1-9]|[1-9][0-9]|[1-4][0-9]{2}|500)m$`; resources.Properties["cpu"].Pattern != want {
+		t.Errorf("resources.cpu.Pattern = %q, want %q", resources.Properties["cpu"].Pattern, want)
+	}
+	if want := `^([1-9][0-9]{0,2}Mi|1Gi)$`; resources.Properties["memory"].Pattern != want {
+		t.Errorf("resources.memory.Pattern = %q, want %q", resources.Properties["memory"].Pattern, want)
+	}
+}
+
+// enumStrings unmarshals a converted schema's raw JSON enum values back into
+// strings, so a test can compare them with cmp.Diff instead of poking at
+// json.RawMessage bytes.
+func enumStrings(t *testing.T, enum []apiextensionsv1.JSON) []string {
+	t.Helper()
+	out := make([]string, len(enum))
+	for i, v := range enum {
+		if err := json.Unmarshal(v.Raw, &out[i]); err != nil {
+			t.Fatalf("unmarshal enum value %d: %v", i, err)
 		}
 	}
+	return out
 }
