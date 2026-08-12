@@ -1,5 +1,7 @@
 # e2e working directory: talos secrets, machine configs, kubeconfig, downloaded images
 /.e2e/
+# Scratch for agent-driven plan execution: ledgers, briefs, review packages.
+/.superpowers/
 /bin/
 /dist/
 # `go build ./cmd/...` drops binaries in the repo root.

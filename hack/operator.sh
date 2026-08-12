@@ -65,8 +65,8 @@ cmd_publish() {
 	fi
 }
 
-# The serving certificate Keycloak presents at the pinned ClusterIP, from the CA
-# the API server was told to trust. Created here rather than by the chart because
+# The serving certificate Keycloak presents on the control plane's host network,
+# from the CA the API server was told to trust. Created here rather than by the chart because
 # it is generated at bring-up: a chart cannot carry a key that does not exist
 # until the cluster does.
 cmd_oidc_secret() {

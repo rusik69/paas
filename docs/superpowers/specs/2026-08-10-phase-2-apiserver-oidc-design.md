@@ -1,6 +1,7 @@
 # Phase 2, part 3 — making the API server trust Keycloak
 
-- **Status:** proposed, not implemented
+- **Status:** implemented and proven by
+  `TestKeycloak_TokenAuthenticatesAndMapsToTheTenantRole`, 2026-08-11
 - **Date:** 2026-08-10
 - **Covers:** the last of roadmap phase 2 — the OIDC provider actually being an
   authentication source, rather than a running pod
@@ -106,16 +107,67 @@ the issuer between service types were looking in the wrong place.
 
 **The remaining approach is to avoid service translation altogether**: run Keycloak with
 `hostNetwork: true`, pinned to the control-plane node, binding the issuer port directly. That is
-now the measured recommendation rather than a guess: a host-network pod on that node is exactly
-what was just shown to be reachable, and the API server would be dialling a real listener on the
-node's own address with no Service, no frontend and nothing to translate, and in-cluster clients can
+the measured recommendation rather than a guess: a host-network pod on that node is exactly
+what was just shown to be reachable, and the API server dials a real listener on the
+node's own address with no Service, no frontend and nothing to translate, while in-cluster clients
 reach the same address because a node IP is routable from pods. The certificate SAN, the issuer
 URL and `KC_HOSTNAME` all become that node address, and `hack/e2e.sh` already regenerates the
 certificate when that address changes.
 
-Worth checking first, as it may be cheaper: whether a Cilium setting (`socketLB`,
-`bpf-lb-sock-hostns-only` and neighbours) is what excludes the static pod. If one does, a values
-change beats moving Keycloak onto the host network.
+### The host-network issuer (built 2026-08-11)
+
+Keycloak binds `10.77.0.11:8443` on the control-plane node's own network namespace. No Service
+of any kind is in the path: the extra `keycloak-oidc` Service is gone, and `OIDC_PORT` is
+Keycloak's own HTTPS port rather than a NodePort.
+
+Three details this rests on:
+
+- **The vendored chart had no `hostNetwork` option**, so it carries a four-line patch —
+  `hostNetwork` plus `dnsPolicy: ClusterFirstWithHostNet`, marked `PAAS PATCH` in its
+  `values.yaml`. The DNS policy is not optional: Keycloak resolves `keycloak-db-rw` through
+  cluster DNS, which a host-network pod does not get by default, and without it the pod would
+  fail at the database rather than at the issuer.
+- **The control plane, not a worker.** The storage suite powers a worker off to prove DRBD
+  failover, and pinning the cluster's authentication source to a node the tests destroy would
+  make every later test's failure mode depend on ordering. The LINSTOR controller is pinned
+  there for the same reason.
+- **Scheduling on the control plane is off** (`allowSchedulingOnControlPlanes: false`), so this
+  needs the `node-role.kubernetes.io/control-plane:NoSchedule` toleration alongside the
+  nodeSelector. Piraeus already carries the same pair.
+
+The Cilium-settings check the previous round suggested (`socketLB`, `bpf-lb-sock-hostns-only`)
+was not run: it would only have salvaged a Service-based issuer, and the host-network shape
+removes the Service rather than fixing translation for it. If the static pod's exclusion from
+socket load balancing ever matters for something else, that is where to start.
+
+**It worked, and the API server's own logs are what say so.** `connect: operation not
+permitted` became `connect: connection refused` — a plain TCP refusal, because Keycloak had not
+bound the port yet — and then stopped entirely the second Keycloak began listening. Three more
+failures stood between that and a passing test, each of which the API server reported as the
+same bare 401:
+
+- **PodSecurity.** Talos enforces `baseline` cluster-wide and baseline forbids `hostNetwork`, so
+  the StatefulSet controller could not create the pod at all. It said so on the StatefulSet,
+  where nothing was looking. `paas-system` now sets `enforce: privileged` and keeps `warn` and
+  `audit` at `restricted`.
+- **The fixture user had no profile.** Keycloak's declarative user profile wants an email and a
+  name, and gives a user without them a `VERIFY_PROFILE` required action; the password grant then
+  refuses with "Account is not fully set up".
+- **And the test could not tell that refusal from a token**, because the `sed` pulling
+  `access_token` out of the response left the error JSON nearly intact, yielding a bare `{` —
+  non-empty, containing no "error", and duly presented to the API server. The response is parsed
+  now.
+
+Two operational findings came with it. Keycloak is a second JVM on the control-plane node, and
+at four gigabytes it was OOM-killed during its own startup — which surfaced as a HelmRelease
+that reinstalled itself forever, since each five-minute install timeout rolled back and
+bootstrapped the database again. The node is six gigabytes now and Keycloak carries a memory
+limit, so its heap is sized against a bound rather than against everything it can see.
+
+A side effect worth knowing: because the issuer binds a node address on the libvirt bridge, a
+developer on the host can reach it directly — `curl -k https://10.77.0.11:8443/realms/paas/.well-known/openid-configuration`
+works from outside the cluster, which no Service-based shape allowed. It is still not the
+production shape; that publishes the issuer through the Gateway with a real certificate.
 
 ## Risks
 

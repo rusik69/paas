@@ -1,0 +1,8 @@
+apiVersion: v2
+name: postgres
+description: >-
+  The tenant-facing chart behind the Postgres ServiceClass. Wraps a CloudNativePG
+  Cluster; values.schema.json is the security boundary for what a tenant may set.
+type: application
+version: 0.1.0
+appVersion: "1.30.0"

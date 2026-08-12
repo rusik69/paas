@@ -51,7 +51,7 @@ L3  Managed services   App plane            VM plane
     ClickHouse, S3     → HTTPRoute
     ─────────────────────────────────────────────────────────────
 L2  Flux (source/helm controllers, sharded) · cert-manager · KEDA
-    Prometheus/Grafana/Loki · Velero · Keycloak/Dex
+    Prometheus/Grafana/Loki · Velero · Keycloak
     ─────────────────────────────────────────────────────────────
 L1  Cilium (CNI, eBPF, Gateway API, BGP) · Piraeus/LINSTOR (DRBD)
     SeaweedFS (S3) · Kube-OVN (VM VPCs, phase 6) · Harbor/Zot registry
@@ -61,7 +61,7 @@ L0  Talos Linux · 3+ control-plane nodes · etcd on NVMe · VIP
 
 ### Load-bearing decisions
 
-Five choices carry most of the risk. Each has an ADR stating the alternatives that were
+Six choices carry most of the risk. Each has an ADR stating the alternatives that were
 rejected and why.
 
 | Decision | ADR |
@@ -70,6 +70,7 @@ rejected and why.
 | **Cilium is the only dataplane** — CNI, service IPs via BGP, policy, Gateway API — until VM VPCs require otherwise. | [0002](adr/0002-cilium-single-dataplane.md) |
 | **Cloud Native Buildpacks** are the default build path for the `App` plane. | [0003](adr/0003-buildpacks-app-plane.md) |
 | **Tenants nest**, and modules enabled at a parent are inherited by descendants. | [0004](adr/0004-tenant-hierarchy-and-inheritance.md) |
+| **The platform is the identity provider**, rather than a broker in front of a tenant's own. | [0005](adr/0005-keycloak-as-the-identity-provider.md) |
 | **Metering is first-class**, not bolted on — it shapes quota, admission, and the tenant model. | §9 |
 
 The rest of the stack is deliberately conventional: Talos, Flux, KubeVirt, LINSTOR/DRBD,
@@ -102,7 +103,12 @@ Reconciling it produces:
 - `ResourceQuota` + `LimitRange` derived from `spec.plan`.
 - `CiliumNetworkPolicy`: **default-deny** across namespaces, plus no pod→apiserver and no
   pod→tenant-etcd. Opt in per workload with explicit labels
-  (`policy.paas.io/allow-to-apiserver: "true"`).
+  (`policy.paas.io/allow-to-apiserver: "true"`). One further allowance, in its own policy:
+  ingress from `paas-system` to the pods a catalog chart created — selected by the
+  chart-contract label `paas.io/service-name`, which every managed instance carries — because
+  the platform's operators run there and manage the instances they provision inside tenant
+  namespaces. Ingress only; tenants still cannot dial into `paas-system`, and a tenant's own
+  workloads are not reachable from it.
 - A Flux `Kustomization` + `HelmRepository` scoped to the namespace, **sharded** by a hash of
   the tenant name across N helm-controller replicas. A single Flux shard is the known
   scaling bottleneck in this architecture; shard from day one.
@@ -248,9 +254,10 @@ Kube-OVN comes back, and not before — it doubles the network surface area.
 
 ## 9. Identity, metering, operations
 
-**Identity.** Keycloak, or Dex fronting an upstream IdP, as the OIDC provider that the
-Kubernetes API server trusts. Tenant membership maps to OIDC groups, and the `Tenant`
-reconciler creates the RBAC bindings. The dashboard and `paasctl` both authenticate via OIDC;
+**Identity.** Keycloak as the OIDC provider that the Kubernetes API server trusts, so that a
+tenant needs no identity provider of its own — see
+[ADR 0005](adr/0005-keycloak-as-the-identity-provider.md) for why not Dex. Tenant membership
+maps to OIDC groups, and the `Tenant` reconciler creates the RBAC bindings. The dashboard and `paasctl` both authenticate via OIDC;
 no long-lived static kubeconfigs for humans.
 
 **Metering and plans.** `paas-usage` collects per-namespace CPU-seconds, memory GB-hours, PVC

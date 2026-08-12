@@ -12,6 +12,21 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: paas-system
+  labels:
+    # Talos enforces PodSecurity baseline cluster-wide, and baseline forbids
+    # hostNetwork. The OIDC issuer has to bind the control-plane node's network
+    # namespace, because the kube-apiserver static pod cannot reach a Service of
+    # any type — see the OIDC design under docs/superpowers/specs.
+    #
+    # This is the namespace the platform installs its own components into, and
+    # nothing a tenant submits ever lands here; PodSecurity in it guards the
+    # platform against its own charts, not against tenants, whose namespaces are
+    # untouched by this. warn and audit stay where the cluster default puts them,
+    # so a component that starts violating restricted still says so in kubectl
+    # and in the audit log rather than going quiet.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
 ---
 apiVersion: v1
 kind: ConfigMap

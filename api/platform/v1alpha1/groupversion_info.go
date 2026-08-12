@@ -29,6 +29,7 @@ func addKnownTypes(s *runtime.Scheme) error {
 		&Platform{}, &PlatformList{},
 		&PackageSource{}, &PackageSourceList{},
 		&Package{}, &PackageList{},
+		&ServiceClass{}, &ServiceClassList{},
 	)
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil

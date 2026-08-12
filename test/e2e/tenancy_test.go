@@ -5,6 +5,7 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,6 +86,12 @@ func waitNamespace(t *testing.T, name string, timeout time.Duration) {
 // whether the connection happens. An HTTP probe conflates the two: the first
 // version of this test used wget and its positive control failed on a 404 from
 // a connection the policy had allowed.
+//
+// A pod that never ran is not a denial. An image it could not pull or a node it
+// could not be scheduled onto leaves the pod Failed or Pending exactly as a
+// dropped connection does, so every negative assertion in this file would pass
+// for the wrong reason. Only nc's own exit code decides: it ran, it tried, and
+// it said no. Anything else fails the test rather than answering it.
 func probe(t *testing.T, namespace, name, host string, port int, labels map[string]string) bool {
 	t.Helper()
 
@@ -119,7 +126,55 @@ func probe(t *testing.T, namespace, name, host string, port int, labels map[stri
 	if err != nil {
 		t.Fatalf("probe %s never terminated: %v", name, err)
 	}
-	return phase == corev1.PodSucceeded
+
+	code, ok := terminatedExitCode(getPod(t, namespace, name))
+	if !ok {
+		t.Fatalf("probe %s reached phase %s without its container ever running (%s); "+
+			"that is a broken fixture, not a policy decision",
+			name, phase, containerStateOf(getPod(t, namespace, name)))
+	}
+	return code == 0
+}
+
+// terminatedExitCode returns the probe container's exit code, and whether it
+// ran at all.
+func terminatedExitCode(pod *corev1.Pod) (int32, bool) {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name != "main" {
+			continue
+		}
+		if cs.State.Terminated == nil {
+			return 0, false
+		}
+		return cs.State.Terminated.ExitCode, true
+	}
+	return 0, false
+}
+
+// containerStateOf describes why a probe container is not terminated, so a
+// broken fixture names its own cause — ImagePullBackOff, say — instead of
+// leaving a bare phase.
+func containerStateOf(pod *corev1.Pod) string {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name != "main" {
+			continue
+		}
+		if cs.State.Waiting != nil {
+			return fmt.Sprintf("waiting: %s: %s", cs.State.Waiting.Reason, cs.State.Waiting.Message)
+		}
+		if cs.State.Running != nil {
+			return "still running"
+		}
+	}
+	return "no container status: " + podConditionSummary(pod)
+}
+
+func podConditionSummary(pod *corev1.Pod) string {
+	var out []string
+	for _, c := range pod.Status.Conditions {
+		out = append(out, fmt.Sprintf("%s=%s(%s)", c.Type, c.Status, c.Reason))
+	}
+	return strings.Join(out, " ")
 }
 
 // The phase-2 done-when: two nested tenants, the child inheriting the parent's
@@ -146,7 +201,7 @@ func TestTenancy_NestedTenantsAreIsolatedAndInheritModules(t *testing.T) {
 
 	// A listener in the parent, so the cross-tenant probe has something real to
 	// fail to reach.
-	target := serveInNamespace(t, "tenant-acme", "listener")
+	target := serveInNamespace(t, "tenant-acme", "listener", nil)
 
 	// Positive control first. If this fails the negative results below mean
 	// nothing, because everything would be unreachable.
@@ -169,6 +224,64 @@ func TestTenancy_NestedTenantsAreIsolatedAndInheritModules(t *testing.T) {
 	if !probe(t, "tenant-acme-beta", "apiserver-optin", "kubernetes.default.svc", 443,
 		map[string]string{"policy.paas.io/allow-to-apiserver": "true"}) {
 		t.Error("the allow-to-apiserver label granted nothing")
+	}
+}
+
+// The allowance allowPlatformPolicy grants paas-system: the platform's own
+// operators (CNPG among them) provision workloads inside a tenant namespace
+// and then have to poll them, which no per-pod opt-in can express — the source
+// is the operator's own namespace, not anything the tenant runs. It reaches
+// only the endpoints a catalog chart created, by the chart-contract label the
+// listener below carries for that reason.
+//
+// Cross-tenant traffic is already asserted denied in
+// TestTenancy_NestedTenantsAreIsolatedAndInheritModules; nothing here repeats
+// it.
+func TestTenancy_PlatformNamespaceReachesTenantWorkloads(t *testing.T) {
+	ensureRootNamespace(t)
+	applyTenant(t, rootNamespace, "svcreach", "trial", false)
+	waitNamespace(t, "tenant-svcreach", 3*time.Minute)
+
+	// Labelled as a managed instance: the platform's reach is granted to the
+	// endpoints a catalog chart created — every such object carries
+	// paas.io/service-name — and not to whatever else a tenant runs. An
+	// unlabelled listener here would be correctly unreachable and would prove
+	// nothing about the allowance the platform's operators actually depend on.
+	target := serveInNamespace(t, "tenant-svcreach", "listener",
+		map[string]string{"paas.io/service-name": "listener-postgres"})
+
+	// Positive control: the listener answers something before concluding
+	// paas-system's own reach to it is what the policy decides.
+	if !probe(t, "tenant-svcreach", "same-ns", sameNamespaceTarget(t, "tenant-svcreach"), 8080, nil) {
+		t.Fatal("a pod could not reach another pod in its own namespace; the platform-reach assertion below would prove nothing")
+	}
+
+	if !probe(t, platformNamespace, "from-platform", target, 8080, nil) {
+		t.Error("a pod in paas-system could not reach a listener in a tenant namespace; " +
+			"the operator-to-workload ingress the platform's managed services depend on is not allowed")
+	}
+}
+
+// The other half of the same fix: the allowance is ingress-only, and nothing
+// else proves the egress direction — a tenant pod dialling into paas-system —
+// stayed shut. This tenant runs no managed instance, so it is also the case
+// where nothing in the namespace is selected by the platform allowance at all.
+func TestTenancy_TenantCannotReachPlatformNamespace(t *testing.T) {
+	ensureRootNamespace(t)
+	applyTenant(t, rootNamespace, "svcegress", "trial", false)
+	waitNamespace(t, "tenant-svcegress", 3*time.Minute)
+
+	// Positive control: this tenant's own connectivity works at all, so a
+	// failure to reach paas-system below is the policy, not a broken pod or a
+	// dead listener.
+	if !probe(t, "tenant-svcegress", "same-ns", sameNamespaceTarget(t, "tenant-svcegress"), 8080, nil) {
+		t.Fatal("a pod could not reach another pod in its own namespace; the egress denial below would prove nothing")
+	}
+
+	target := serveInNamespace(t, platformNamespace, "e2e-egress-target", nil)
+
+	if probe(t, "tenant-svcegress", "to-platform", target, 8080, nil) {
+		t.Error("a tenant pod reached paas-system; the fix for operator ingress was meant to stay ingress-only")
 	}
 }
 
@@ -209,12 +322,13 @@ func waitModuleResolved(t *testing.T, namespace, name, module, wantTenant string
 	}
 }
 
-// serveInNamespace starts a listener and returns its pod IP.
-func serveInNamespace(t *testing.T, namespace, name string) string {
+// serveInNamespace starts a listener and returns its pod IP. labels are the
+// pod's own, which decide what the tenant's policies make of it.
+func serveInNamespace(t *testing.T, namespace, name string, labels map[string]string) string {
 	t.Helper()
 
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
 		Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{
 				Name:    "main",
@@ -248,7 +362,7 @@ func serveInNamespace(t *testing.T, namespace, name string) string {
 func sameNamespaceTarget(t *testing.T, namespace string) string {
 	t.Helper()
 
-	return serveInNamespace(t, namespace, "local-listener")
+	return serveInNamespace(t, namespace, "local-listener", nil)
 }
 
 // The half envtest cannot reach: a real cluster runs the token controller, so

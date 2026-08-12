@@ -60,26 +60,35 @@ func applyAll(ctx context.Context, c client.Client, crds []*apiextensionsv1.Cust
 	return nil
 }
 
-// waitEstablished polls rather than watches: this runs once at startup, and a
-// watch would cost a cache and an informer for a wait measured in seconds.
+// Established reports whether the API server has accepted a CRD.
+//
+// The error is terminal rather than "not yet": names already taken by another
+// CRD are never granted, so a caller that kept waiting would report a timeout
+// instead of the conflict that caused it. It is separate from the wait below
+// because a reconciler woken by a watch has the object already and must not
+// poll for it — see internal/controller/serviceclass.
+func Established(crd *apiextensionsv1.CustomResourceDefinition) (bool, error) {
+	for _, cond := range crd.Status.Conditions {
+		if cond.Type == apiextensionsv1.NamesAccepted && cond.Status == apiextensionsv1.ConditionFalse {
+			return false, fmt.Errorf("crd %s names rejected: %s", crd.Name, cond.Message)
+		}
+		if cond.Type == apiextensionsv1.Established && cond.Status == apiextensionsv1.ConditionTrue {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// waitEstablished polls rather than watches: this runs once at startup, before
+// any manager or cache exists, and a watch would cost both for a wait measured
+// in seconds.
 func waitEstablished(ctx context.Context, c client.Client, name string) error {
 	return wait.For(ctx, time.Second, "crd "+name+" Established", func(ctx context.Context) (bool, error) {
 		got := &apiextensionsv1.CustomResourceDefinition{}
 		if err := c.Get(ctx, types.NamespacedName{Name: name}, got); err != nil {
 			return false, nil
 		}
-		for _, cond := range got.Status.Conditions {
-			// Terminal: names already taken by another CRD are never granted,
-			// so waiting out the deadline would report a timeout instead of the
-			// conflict that caused it.
-			if cond.Type == apiextensionsv1.NamesAccepted && cond.Status == apiextensionsv1.ConditionFalse {
-				return false, fmt.Errorf("crd %s names rejected: %s", name, cond.Message)
-			}
-			if cond.Type == apiextensionsv1.Established && cond.Status == apiextensionsv1.ConditionTrue {
-				return true, nil
-			}
-		}
-		return false, nil
+		return Established(got)
 	})
 }
 

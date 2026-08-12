@@ -29,6 +29,7 @@ func TestLoad_ReturnsEveryEmbeddedCRD(t *testing.T) {
 		"packages.platform.paas.io",
 		"packagesources.platform.paas.io",
 		"platforms.platform.paas.io",
+		"serviceclasses.platform.paas.io",
 		"tenants.core.paas.io",
 	}
 

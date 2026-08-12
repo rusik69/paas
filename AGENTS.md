@@ -144,6 +144,23 @@ to get wrong:
   reports it as a GatewayClass reconcile error.
 - **Do not build phase 6 before phase 5.** VMs are the most seductive and least
   differentiating piece of the platform.
+- **`make operator-up` does not deploy your operator changes, and neither does
+  restarting the pod.** It rebuilds and pushes the image under a fixed tag with
+  `imagePullPolicy: IfNotPresent`, so the Deployment spec never changes and
+  nothing tells the kubelet to re-pull. `kubectl rollout restart` is not enough
+  either: it makes a new pod, which finds that tag already in the node's image
+  cache and reuses the old binary. What works is forcing the pull —
+
+  ```sh
+  kubectl -n paas-system patch deploy paas-operator --type=json \
+    -p='[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Always"}]'
+  ```
+
+  Confirm it took by comparing `imageID` before and after; the digest must
+  change. An operator pod has survived an `operator-up` **and** a rollout
+  restart while still running old code, and the e2e run that was meant to verify
+  the change spent fifteen minutes proving the previous commit instead. The real
+  fix belongs in `hack/` — a content-addressed tag, or `Always` in the manifest.
 
 ## Working agreements
 

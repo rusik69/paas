@@ -12,14 +12,15 @@ database:
       memory: 256Mi
 
 # The OIDC identity the API server is configured to trust. Every value here
-# appears somewhere else too and must agree: clusterIP with the certificate SAN
-# and the API server's issuer URL, realm and clientId with its --oidc-* flags.
+# appears somewhere else too and must agree: host and port with the certificate
+# SAN and the API server's issuer URL, realm and clientId with its --oidc-* flags.
 oidc:
-  # The control-plane node's address and a fixed NodePort. Reachable from the
-  # API server without any service translation, which a ClusterIP turned out to
-  # need and not get.
+  # The control-plane node's own address, where Keycloak binds directly. Both a
+  # pinned ClusterIP and a NodePort were tried and refused with EPERM: Cilium's
+  # socket load balancer translates service addresses for pods and host-network
+  # pods alike — measured, on this very node — but the kube-apiserver static pod
+  # does not get that translation. A host-network listener needs none.
   host: 10.77.0.11
-  nodePort: 31443
   port: 8443
   realm: paas
   clientId: kubernetes
@@ -32,6 +33,23 @@ oidc:
 # Values reaching the vendored chart. Everything the platform decides lives
 # here, so the vendored directory stays a verbatim copy of upstream.
 keycloakx:
+  # The issuer is an address on the node, not a Service, so Keycloak binds the
+  # node's network namespace. Requires the patch to the vendored chart, which
+  # has no upstream option for it.
+  hostNetwork: true
+
+  # And the node has to be the one the issuer URL names. The control plane is
+  # deliberate: it is the node the storage suite never powers off, so killing a
+  # worker cannot take the cluster's authentication source with it — the same
+  # reason the LINSTOR controller is pinned here. Scheduling on the control
+  # plane is otherwise off, hence the toleration.
+  nodeSelector:
+    node-role.kubernetes.io/control-plane: ""
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+
   command:
     # start-dev keeps the relaxed hostname checks a production start enforces,
     # while the TLS below is what makes the issuer usable: Kubernetes requires an
@@ -50,7 +68,7 @@ keycloakx:
     # token's iss claim, and the API server rejects a token whose issuer differs
     # by so much as a port.
     - name: KC_HOSTNAME
-      value: "https://10.77.0.11:31443"
+      value: "https://10.77.0.11:8443"
     - name: KC_HOSTNAME_STRICT
       value: "false"
     # Certificates turn on TLS for the management interface too, and the chart's
@@ -102,3 +120,9 @@ keycloakx:
     requests:
       cpu: 200m
       memory: 512Mi
+    limits:
+      # A limit, not just a request, because the JVM sizes its heap against
+      # whatever memory it can see. Unbounded on a node it shares with etcd and
+      # the API server, it grew until the kernel picked a victim — and the
+      # kernel's choice is not always Keycloak.
+      memory: 1536Mi

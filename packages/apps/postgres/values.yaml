@@ -1,0 +1,9 @@
+# Defaults sized for the dev cluster's two ~3Gi workers. A tenant's .spec
+# overrides these verbatim — see values.schema.json for what may be set.
+instances: 2
+storage:
+  size: 1Gi
+  class: replicated-3
+resources:
+  cpu: 100m
+  memory: 256Mi

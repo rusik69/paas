@@ -101,14 +101,24 @@ that rolling back restores it.)*
 - `CiliumNetworkPolicy` default-deny, with the label-based opt-ins.
   *(Landed: per-namespace default-deny at every depth plus a per-pod
   `policy.paas.io/allow-to-apiserver` opt-in. Enforcement is asserted on the cluster, not in
-  envtest — a fixture CRD there only proves the objects were written.)*
-- OIDC provider (Keycloak or Dex), group→RBAC binding, generated kubeconfig Secret.
+  envtest — a fixture CRD there only proves the objects were written. Amended in phase 3:
+  `internal/controller/tenant/policy.go` also allows ingress, unconditionally, from
+  `paas-system`, because the platform's own operators need to reach the managed-service
+  instances they provision inside tenant namespaces — no pod label can express a
+  cross-namespace allowance. Ingress only; tenant-to-tenant isolation is untouched. Proven by
+  `TestTenancy_PlatformNamespaceReachesTenantWorkloads` and
+  `TestTenancy_TenantCannotReachPlatformNamespace`; see architecture.md §4.)*
+- OIDC provider (Keycloak, per [ADR 0005](adr/0005-keycloak-as-the-identity-provider.md)),
+  group→RBAC binding, generated kubeconfig Secret.
   *(Landed: `tenant-admin`/`tenant-viewer` bound to the tenant's OIDC group and to every
-  ancestor's admins, plus a namespace-pinned CI kubeconfig proven usable in e2e. The provider
-  Keycloak and its CloudNativePG database are delivered by the platform and proven up. What
-  remains is making the API server trust it, designed in
-  [the OIDC spec](superpowers/specs/2026-08-10-phase-2-apiserver-oidc-design.md) and not yet
-  built. The CI token is long-lived rather than bound — a refresh loop is unwritten.)*
+  ancestor's admins, plus a namespace-pinned CI kubeconfig proven usable in e2e. Keycloak and
+  its CloudNativePG database are delivered by the platform, and the API server trusts it: a
+  token issued to a user in `paas:tenant:acme` reads that tenant's namespace and gets a 403 from
+  `kube-system`, asserted by `TestKeycloak_TokenAuthenticatesAndMapsToTheTenantRole`. The issuer
+  binds the control-plane node's host network, because the kube-apiserver static pod cannot
+  reach a Service of any type — see
+  [the OIDC spec](superpowers/specs/2026-08-10-phase-2-apiserver-oidc-design.md). The CI token
+  is long-lived rather than bound — a refresh loop is unwritten.)*
 - Module enable/inherit resolution up the ancestor chain.
   *(Landed: `tenancy.Resolve`. The modules themselves are phase-3 packaging work.)*
 
@@ -116,20 +126,43 @@ that rolling back restores it.)*
 negative network test proves cross-tenant traffic and pod→apiserver access both fail.
 *(Met by `TestTenancy_NestedTenantsAreIsolatedAndInheritModules`, with positive controls —
 same-namespace traffic and the opt-in label — so the denials cannot pass by everything being
-unreachable. OIDC, RBAC bindings and the kubeconfig Secret are still outstanding.)*
+unreachable. OIDC, the RBAC bindings and the kubeconfig Secret have since landed too, the last
+of them proven by `TestKeycloak_TokenAuthenticatesAndMapsToTheTenantRole`.)*
 
 ### Phase 3 — Managed services
 
 The `ServiceClass` machinery and the first three catalog entries.
 
 - `ServiceClass` → `CustomResourceDefinition` generator driven by `values.schema.json`.
+  *(Landed: `internal/schema` converts a chart's `values.schema.json` to a Kubernetes structural
+  schema and refuses, rather than silently drops, what cannot convert faithfully — `$ref`,
+  `definitions`, `patternProperties`, a typed `oneOf`. `internal/controller/serviceclass`
+  server-side applies the generated CRD, group `apps.paas.io`, and waits for `Established`
+  before handing off to the engine.)*
 - Dynamic per-kind reconciler: tenant CR → server-side-applied HelmRelease.
+  *(Landed: `internal/controller/engine` starts and stops one controller per GVK idempotently,
+  with no leaked informer; `internal/controller/service` renders each CR into a same-namespace,
+  owner-referenced `HelmRelease` under field manager `paas-operator/service`, values taken from
+  `.spec` verbatim.)*
 - Status propagation from the HelmRelease and from the underlying operator CR.
+  *(Landed: the HelmRelease's `Ready` condition and each `statusFrom` JSONPath copy back with no
+  polling — an informer on the underlying kind wakes the reconcile. Proven live by
+  `TestService_PostgresBecomesReadyAndReportsItsPrimary`.)*
 - Charts: `postgres` (CloudNativePG), `redis` (Valkey), `bucket` (SeaweedFS).
+  *(Landed: `postgres` only, via `packages/apps/postgres` and the `packages/system/catalog`
+  `ServiceClass` template, including reclaim on delete proven by
+  `TestService_DeleteReclaimsEverything`. `redis` and `bucket` are still outstanding. What they
+  are allowed to add is a chart and a catalog template — nothing in Go — and that constraint is
+  the property this phase exists to establish; it has not yet been tested by a second service.)*
 
 **Done when:** `kubectl apply -f postgres.yaml` in a tenant namespace yields a running HA
 CNPG cluster, `kubectl get postgres` reports a real primary, and deleting the CR reclaims
-everything.
+everything. *(Met for `postgres`, by `TestService_PostgresBecomesReadyAndReportsItsPrimary` and
+`TestService_DeleteReclaimsEverything`, with
+`TestService_OffSchemaFieldIsRejectedWithItsOwnMessage` proving the generated schema is the
+security boundary the design claims rather than merely arguing it. Not yet met for `redis` or
+`bucket` — see the
+[design spec's findings](superpowers/specs/2026-08-11-phase-3-serviceclass-design.md#findings).)*
 
 ### Phase 4 — Dashboard
 
