@@ -1,0 +1,19 @@
+apiVersion: platform.paas.io/v1alpha1
+kind: ServiceClass
+metadata:
+  name: redis
+spec:
+  kind: Redis
+  plural: redises
+  chart:
+    name: redis
+    version: {{ .Values.redis.version | quote }}
+  statusFrom:
+    - path: .status.ready
+      from:
+        apiVersion: apps/v1
+        kind: StatefulSet
+      jsonPath: .status.readyReplicas
+  ui:
+    icon: redis
+    category: databases

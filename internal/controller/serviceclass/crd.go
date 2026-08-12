@@ -45,6 +45,11 @@ func CRDFor(sc *v1alpha1.ServiceClass, rawSchema []byte) (*apiextensionsv1.Custo
 		return nil, fmt.Errorf("chart %s:%s: %w", sc.Spec.Chart.Name, sc.Spec.Chart.Version, err)
 	}
 
+	status, err := statusSchema(sc.Spec.StatusFrom)
+	if err != nil {
+		return nil, fmt.Errorf("service class %s: %w", sc.Name, err)
+	}
+
 	columns := []apiextensionsv1.CustomResourceColumnDefinition{{
 		Name:     "Ready",
 		Type:     "string",
@@ -92,7 +97,7 @@ func CRDFor(sc *v1alpha1.ServiceClass, rawSchema []byte) (*apiextensionsv1.Custo
 						Type: "object",
 						Properties: map[string]apiextensionsv1.JSONSchemaProps{
 							"spec":   *specSchema,
-							"status": statusSchema(),
+							"status": status,
 						},
 					},
 				},
@@ -101,36 +106,53 @@ func CRDFor(sc *v1alpha1.ServiceClass, rawSchema []byte) (*apiextensionsv1.Custo
 	}, nil
 }
 
-// statusSchema is ours rather than the chart's: conditions plus whatever
-// statusFrom copies in, which is free-form by construction.
+// statusSchema is ours rather than the chart's: the conditions every generated
+// kind carries, plus one field per statusFrom entry.
 //
-// primary is hardcoded because the only catalog entry today (postgres)
-// copies into .status.primary. A future service copying into a different
-// path needs that path declared here too, or a structural schema silently
-// drops the field on write.
-func statusSchema() apiextensionsv1.JSONSchemaProps {
-	return apiextensionsv1.JSONSchemaProps{
-		Type: "object",
-		Properties: map[string]apiextensionsv1.JSONSchemaProps{
-			"observedGeneration": {Type: "integer", Format: "int64"},
-			"primary":            {Type: "string"},
-			"conditions": {
-				Type: "array",
-				Items: &apiextensionsv1.JSONSchemaPropsOrArray{
-					Schema: &apiextensionsv1.JSONSchemaProps{
-						Type:     "object",
-						Required: []string{"type", "status", "lastTransitionTime", "reason"},
-						Properties: map[string]apiextensionsv1.JSONSchemaProps{
-							"type":               {Type: "string"},
-							"status":             {Type: "string"},
-							"observedGeneration": {Type: "integer", Format: "int64"},
-							"lastTransitionTime": {Type: "string", Format: "date-time"},
-							"reason":             {Type: "string"},
-							"message":            {Type: "string"},
-						},
+// Declared rather than free-form because a structural schema drops an
+// undeclared field on write without erroring, so an undeclared status path
+// would leave kubectl showing nothing and no message saying why.
+func statusSchema(sources []v1alpha1.StatusSource) (apiextensionsv1.JSONSchemaProps, error) {
+	props := map[string]apiextensionsv1.JSONSchemaProps{
+		"observedGeneration": {Type: "integer", Format: "int64"},
+		"conditions": {
+			Type: "array",
+			Items: &apiextensionsv1.JSONSchemaPropsOrArray{
+				Schema: &apiextensionsv1.JSONSchemaProps{
+					Type:     "object",
+					Required: []string{"type", "status", "lastTransitionTime", "reason"},
+					Properties: map[string]apiextensionsv1.JSONSchemaProps{
+						"type":               {Type: "string"},
+						"status":             {Type: "string"},
+						"observedGeneration": {Type: "integer", Format: "int64"},
+						"lastTransitionTime": {Type: "string", Format: "date-time"},
+						"reason":             {Type: "string"},
+						"message":            {Type: "string"},
 					},
 				},
 			},
 		},
 	}
+
+	reserved := make(map[string]struct{}, len(props))
+	for name := range props {
+		reserved[name] = struct{}{}
+	}
+
+	for _, s := range sources {
+		field, ok := strings.CutPrefix(s.Path, ".status.")
+		if !ok || field == "" || strings.Contains(field, ".") {
+			return apiextensionsv1.JSONSchemaProps{}, fmt.Errorf(
+				"statusFrom path %q must be .status.<field>", s.Path)
+		}
+		if _, ok := reserved[field]; ok {
+			return apiextensionsv1.JSONSchemaProps{}, fmt.Errorf(
+				"statusFrom path %q: field %q is reserved for the status every generated kind carries", s.Path, field)
+		}
+		// Every value readStatusFrom produces is a string: it renders a
+		// JSONPath into a buffer.
+		props[field] = apiextensionsv1.JSONSchemaProps{Type: "string"}
+	}
+
+	return apiextensionsv1.JSONSchemaProps{Type: "object", Properties: props}, nil
 }

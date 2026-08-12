@@ -149,20 +149,36 @@ The `ServiceClass` machinery and the first three catalog entries.
   polling — an informer on the underlying kind wakes the reconcile. Proven live by
   `TestService_PostgresBecomesReadyAndReportsItsPrimary`.)*
 - Charts: `postgres` (CloudNativePG), `redis` (Valkey), `bucket` (SeaweedFS).
-  *(Landed: `postgres` only, via `packages/apps/postgres` and the `packages/system/catalog`
+  *(Landed: `postgres`, via `packages/apps/postgres` and the `packages/system/catalog`
   `ServiceClass` template, including reclaim on delete proven by
-  `TestService_DeleteReclaimsEverything`. `redis` and `bucket` are still outstanding. What they
-  are allowed to add is a chart and a catalog template — nothing in Go — and that constraint is
-  the property this phase exists to establish; it has not yet been tested by a second service.)*
+  `TestService_DeleteReclaimsEverything`. `redis` landed too, via `packages/apps/redis` — a
+  single Valkey instance, persistent, **no failover**: dev-cluster-grade, not a finished managed
+  service. Proven by `TestRedis_BecomesReadyAndReportsItsReplicaCount`,
+  `TestRedis_StoresWhatWasWritten`, `TestRedis_DeleteReclaimsEverything`, and
+  `TestRedis_OffSchemaFieldIsRejectedWithItsOwnMessage`. Its `git diff --stat` against the commit
+  before the entry started shows exactly one production Go file changed —
+  `internal/controller/serviceclass/crd.go`, the one change budgeted before redis existed — so
+  the second entry cost a chart and a catalog template and nothing else in Go, and the
+  phase-3-part-1 claim is now measured against a second service rather than tested only against
+  the one it was written for. `bucket` is still outstanding; see the [design spec's
+  findings](superpowers/specs/2026-08-12-phase-3-redis-design.md#findings) for what this entry
+  caught along the way — a StatefulSet PVC leak on delete that only the e2e found, a fail-open
+  reserved-name check in the schema generalisation, and confirmation that the
+  `policy.paas.io/allow-to-apiserver` opt-in is genuinely conditional rather than something every
+  chart needs.)*
 
 **Done when:** `kubectl apply -f postgres.yaml` in a tenant namespace yields a running HA
 CNPG cluster, `kubectl get postgres` reports a real primary, and deleting the CR reclaims
 everything. *(Met for `postgres`, by `TestService_PostgresBecomesReadyAndReportsItsPrimary` and
 `TestService_DeleteReclaimsEverything`, with
 `TestService_OffSchemaFieldIsRejectedWithItsOwnMessage` proving the generated schema is the
-security boundary the design claims rather than merely arguing it. Not yet met for `redis` or
-`bucket` — see the
-[design spec's findings](superpowers/specs/2026-08-11-phase-3-serviceclass-design.md#findings).)*
+security boundary the design claims rather than merely arguing it. Also met for `redis` — one
+Valkey instance, no HA, dev-cluster-grade — by `TestRedis_BecomesReadyAndReportsItsReplicaCount`
+and `TestRedis_DeleteReclaimsEverything`, with `TestRedis_OffSchemaFieldIsRejectedWithItsOwnMessage`
+proving the same security boundary on a second, independently-generated schema. Not yet met for
+`bucket` — see the [design spec's
+findings](superpowers/specs/2026-08-12-phase-3-redis-design.md#findings) for what redis found on
+the way.)*
 
 ### Phase 4 — Dashboard
 

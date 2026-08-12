@@ -1,6 +1,9 @@
 # Phase 3, part 2 — redis, and the property it exists to test
 
-- **Status:** approved, not implemented
+- **Status:** implemented. Proven by `TestRedis_BecomesReadyAndReportsItsReplicaCount`,
+  `TestRedis_StoresWhatWasWritten`, `TestRedis_OffSchemaFieldIsRejectedWithItsOwnMessage`, and
+  `TestRedis_DeleteReclaimsEverything`, on real Talos guests, with the postgres
+  `TestService_*` suite passing in the same run.
 - **Date:** 2026-08-12
 - **Covers:** the second catalog entry of roadmap phase 3. `bucket` stays outstanding.
 - **Depends on:** the machinery from
@@ -63,8 +66,13 @@ which is where a small chart stops being small — and HA is its own design, not
 | `packages/apps/redis/templates/valkey.yaml` | StatefulSet and Service |
 | `packages/system/catalog/templates/redis.yaml` | the `ServiceClass` |
 
-The Valkey image version goes in [hack/versions.sh](../../../hack/versions.sh) and nowhere
-else, per non-negotiable 1.
+The Valkey image version is declared in [hack/versions.sh](../../../hack/versions.sh) — what
+`make versions` checks still resolves upstream — and repeated as a literal in
+`packages/apps/redis/values.yaml` and in `Chart.yaml`'s `appVersion`, because a chart must be
+self-contained. A comment in `values.yaml` asks the two to agree; nothing enforces it. This is
+the same arrangement `KEYCLOAK_VERSION` has with the vendored keycloakx chart, so it is
+established precedent here, not a new gap. See [Findings](#findings) for the one difference
+between the postgres copy of this pattern and this one.
 
 ## The schema
 
@@ -94,7 +102,10 @@ StatefulSet carries the chart-contract labels, so the existing reverse map finds
 new machinery.
 
 That path is what forces the generalisation above, and it gives `kubectl get redis` a Ready
-column that means something rather than a second Primary column that does not apply.
+column backed by a real condition. The second column is a different story: `crd.go` still
+names it `Primary` unconditionally, so `kubectl get redis` prints `PRIMARY 1` — a label that
+made sense for postgres and does not for a StatefulSet's ready-replica count. See
+[Findings](#findings) for what that assumption is and why it stays as found.
 
 ## What proves it
 
@@ -114,6 +125,72 @@ is cheap, so:
 contains no `.go` changes beyond the `statusSchema` generalisation. That is the actual
 deliverable, and it is worth stating in the roadmap when it lands.
 
+## Findings
+
+**The claim held.** `git diff --stat` from the commit before the first task to the last shows
+exactly one production Go file changed: `internal/controller/serviceclass/crd.go`, generalising
+`statusSchema` — the one change [budgeted above](#the-one-go-change-and-why-there-is-exactly-one)
+before redis existed to need it. Everything else the entry needed was three test files
+(`internal/controller/serviceclass/crd_test.go`, `internal/schema/structural_test.go`,
+`test/e2e/redis_test.go`) and the five non-Go files the design promised: `hack/versions.sh`, the
+four `packages/apps/redis/` files, and `packages/system/catalog/templates/redis.yaml`. A second
+service really did cost a chart and a catalog template and nothing in Go beyond the change
+already planned for it — measured, not asserted, and the postgres `TestService_*` suite stayed
+green in the same run, which is what proves the generalisation did not regress the machinery
+every other generated CRD depends on.
+
+**The chart leaked the tenant's volume on delete, and only the e2e could find it.**
+`TestRedis_DeleteReclaimsEverything` failed on its first run: the `HelmRelease` and the
+`StatefulSet` were both gone, but the PVC stayed `Bound`. Helm never creates a StatefulSet's
+`volumeClaimTemplate` PVCs — the StatefulSet controller does, at scale-up — so they are absent
+from the release manifest and `helm uninstall` never touches them, and Kubernetes deliberately
+leaves them behind when the StatefulSet itself is deleted. `postgres` never hit this because CNPG
+owner-references its PVCs to its `Cluster` (see the [phase 3 part 1
+findings](2026-08-11-phase-3-serviceclass-design.md#findings)); a hand-written StatefulSet chart
+gets no such reference for free. Fixed with `spec.persistentVolumeClaimRetentionPolicy`
+(`whenDeleted: Delete`, `whenScaled: Retain`) on the StatefulSet, after which the test passes in
+43s. This is a trap for every future hand-written StatefulSet chart in this catalog, not just
+this one.
+
+**`statusSchema` was fail-open for its own reserved names.** The generalisation had to reserve
+`.status.conditions` and `.status.ready` from being redeclared by a class's own `statusFrom`, and
+the first version of that check did not actually enforce it: a `ServiceClass` naming
+`.status.conditions` in `statusFrom` would have overwritten the conditions array's schema with a
+string and produced a CRD that looked valid but rejected every status write the API server made
+afterward. Found in review, not on the cluster; fixed by deriving the reserved set from the
+seeded map's own keys instead of a second, hand-maintained list that could drift from it.
+
+**The deliberate absence held.** `packages/apps/redis` does not carry
+`policy.paas.io/allow-to-apiserver` — Valkey never talks to the API server — and nothing broke.
+This is the demonstration [promised above](#what-this-entry-tests-for-free): the chart-contract
+label added after CNPG's instance manager was blocked by the tenant default-deny policy is a
+genuine per-pod opt-in, tested here on a chart that has no reason to carry it, rather than
+something every chart in the catalog copies defensively regardless of need.
+
+**A surviving postgres-shaped assumption: the second printer column's name is hardcoded.**
+`CRDFor` in `crd.go` builds it as `Name: "Primary"` unconditionally, while its `JSONPath`
+correctly comes from `sc.Spec.StatusFrom[0].Path`. With one catalog entry the two could not
+disagree — postgres's path *is* `.status.primary` — so nothing forced the name to generalise
+alongside the value it labels, and it was invisible until a second entry read from a
+differently-named path. Redis's is `.status.ready`, so `kubectl get redis` now prints a column
+headed `PRIMARY` carrying the ready-replica count, which is the exact "second Primary column
+that does not apply" the status-propagation section above used to claim redis avoided. Fixing
+it means deriving the column name from the status path's last segment instead of a literal —
+small, but it is a Go change, and this entry's whole deliverable is the measurement of how
+much Go a second catalog entry costs. Absorbing a second Go change quietly here, on the grounds
+that it is small and obviously correct, would corrupt that measurement rather than report it.
+It is left unfixed, on the record, for whoever adds the third service class.
+
+**The version triplication has no assertion, unlike its precedent.**
+`TestCNPG_OperatorIsDeliveredByThePlatform` in `test/e2e/cnpg_test.go` reads `CNPG_VERSION` out
+of `hack/versions.sh` and asserts it against the running operator's `app.kubernetes.io/version`
+label, so CNPG's three copies of its version cannot drift without a red e2e run. Redis has the
+same three-copy arrangement — see [the five files above](#the-five-files) — but
+`test/e2e/redis_test.go` asserts none of it;
+only the comment in `values.yaml` asks `hack/versions.sh` and the chart to agree. This is a
+real gap, not a new one — writing and verifying that assertion needs a cluster run, and this
+branch's cluster run is done, so it is recorded here as a follow-up rather than added now.
+
 ## Risks
 
 **The `statusSchema` change touches what every generated CRD depends on.** A regression breaks
@@ -131,3 +208,13 @@ number that is compared rather than displayed.
 packaging property and wrong for a tenant expecting a managed cache to survive a node. The
 roadmap should say so where a reader will see it, so this is not mistaken for the finished
 product.
+
+**The memory limit equals the request, and no `maxmemory` is configured.** A tenant filling
+the cache gets an OOMKill loop rather than key eviction — a surprising failure mode for
+something a tenant may reasonably treat as a cache, which is supposed to shed data under
+pressure rather than restart.
+
+**The pod template carries no `securityContext`.** No `runAsNonRoot`, no dropped capabilities,
+no seccomp profile. This is the catalog's first hand-written pod template, so whatever it does
+here is the precedent the third chart will copy. A weak precedent copied three times is harder
+to fix than one, so this should be said plainly rather than left to be noticed later.

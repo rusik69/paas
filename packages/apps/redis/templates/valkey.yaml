@@ -1,0 +1,91 @@
+{{- /*
+  Labels on every object: the per-kind controller finds the StatefulSet by them
+  to copy .status.readyReplicas into the Redis's own status.
+
+  No policy.paas.io/allow-to-apiserver here, deliberately. Valkey never talks to
+  the API server, and the tenant default-deny opt-in is per-pod so that a tenant
+  running one controller does not thereby grant it to every workload.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    paas.io/service-name: {{ .Release.Name }}
+    paas.io/service-namespace: {{ .Release.Namespace }}
+spec:
+  clusterIP: None
+  selector:
+    paas.io/service-name: {{ .Release.Name }}
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: valkey
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    paas.io/service-name: {{ .Release.Name }}
+    paas.io/service-namespace: {{ .Release.Namespace }}
+spec:
+  serviceName: {{ .Release.Name }}
+  replicas: 1
+  {{- /*
+    volumeClaimTemplate PVCs are created by the StatefulSet controller, not by
+    Helm, so they are outside the release manifest: a helm uninstall never
+    touches them, and by default Kubernetes leaves them Bound forever after
+    the StatefulSet is gone. Delete-on-delete is what makes deleting a Redis
+    actually reclaim its volume. whenScaled stays Retain: this chart is fixed
+    at one replica so it should never fire, but a workload that scaled down
+    should not lose data as a side effect of a policy nobody meant to apply
+    to that case.
+  */}}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Delete
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      paas.io/service-name: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        paas.io/service-name: {{ .Release.Name }}
+        paas.io/service-namespace: {{ .Release.Namespace }}
+    spec:
+      containers:
+        - name: valkey
+          image: {{ .Values.image | quote }}
+          args: ["--dir", "/data", "--appendonly", "yes"]
+          ports:
+            - name: valkey
+              containerPort: 6379
+          resources:
+            requests:
+              cpu: {{ .Values.resources.cpu | quote }}
+              memory: {{ .Values.resources.memory | quote }}
+            limits:
+              memory: {{ .Values.resources.memory | quote }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["valkey-cli", "ping"]
+            initialDelaySeconds: 2
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          paas.io/service-name: {{ .Release.Name }}
+          paas.io/service-namespace: {{ .Release.Namespace }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.storage.class | quote }}
+        resources:
+          requests:
+            storage: {{ .Values.storage.size | quote }}

@@ -601,6 +601,54 @@ func TestConvert_PostgresChartSchema(t *testing.T) {
 	}
 }
 
+// TestConvert_RedisChartSchema runs the actual published
+// packages/apps/redis/values.schema.json through Convert, the same way
+// TestConvert_PostgresChartSchema does for postgres — without this, a schema
+// mistake in that file only surfaces once a ServiceClass tries to generate a
+// CRD from it on a running cluster.
+func TestConvert_RedisChartSchema(t *testing.T) {
+	path := filepath.Join("..", "..", "packages", "apps", "redis", "values.schema.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	got, err := Convert(raw)
+	if err != nil {
+		t.Fatalf("Convert(%s) rejected the redis chart's schema: %v", path, err)
+	}
+
+	storage, ok := got.Properties["storage"]
+	if !ok {
+		t.Fatal("converted schema has no \"storage\" property")
+	}
+	class, ok := storage.Properties["class"]
+	if !ok {
+		t.Fatal("converted schema has no \"storage.class\" property")
+	}
+	if diff := cmp.Diff([]string{"replicated-2", "replicated-3"}, enumStrings(t, class.Enum)); diff != "" {
+		t.Errorf("storage.class enum diff (-want +got):\n%s", diff)
+	}
+	size, ok := storage.Properties["size"]
+	if !ok {
+		t.Fatal("converted schema has no \"storage.size\" property")
+	}
+	if want := `^([1-9][0-9]{0,2}Mi|[1-5]Gi)$`; size.Pattern != want {
+		t.Errorf("storage.size.Pattern = %q, want %q — a dropped bound lets a tenant ask for an unbounded volume", size.Pattern, want)
+	}
+
+	resources, ok := got.Properties["resources"]
+	if !ok {
+		t.Fatal("converted schema has no \"resources\" property")
+	}
+	if want := `^([1-9]|[1-9][0-9]|[1-4][0-9]{2}|500)m$`; resources.Properties["cpu"].Pattern != want {
+		t.Errorf("resources.cpu.Pattern = %q, want %q", resources.Properties["cpu"].Pattern, want)
+	}
+	if want := `^([1-9][0-9]{0,2}Mi|1Gi)$`; resources.Properties["memory"].Pattern != want {
+		t.Errorf("resources.memory.Pattern = %q, want %q", resources.Properties["memory"].Pattern, want)
+	}
+}
+
 // enumStrings unmarshals a converted schema's raw JSON enum values back into
 // strings, so a test can compare them with cmp.Diff instead of poking at
 // json.RawMessage bytes.
