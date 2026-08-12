@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "storage": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "string",
+          "pattern": "^([1-9][0-9]{0,2}Mi|[1-5]Gi)$",
+          "default": "1Gi",
+          "description": "Volume size, capped at 5Gi. Every replicated storage class puts a full copy on each node it spans, out of a 20Gi data disk per dev-cluster node shared with every other volume."
+        },
+        "class": {
+          "type": "string",
+          "enum": ["replicated-2", "replicated-3"],
+          "default": "replicated-3",
+          "description": "StorageClass. Both are DRBD-replicated; the number is the replica count."
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "cpu": {
+          "type": "string",
+          "pattern": "^([1-9]|[1-9][0-9]|[1-4][0-9]{2}|500)m$",
+          "default": "100m",
+          "description": "CPU request, capped at 500m — a quarter of a dev-cluster worker's 2 vCPUs."
+        },
+        "memory": {
+          "type": "string",
+          "pattern": "^([1-9][0-9]{0,2}Mi|1Gi)$",
+          "default": "256Mi",
+          "description": "Memory request, capped at 1Gi — a third of a dev-cluster worker's 3Gi."
+        }
+      }
+    }
+  }
+}
