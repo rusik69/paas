@@ -164,6 +164,8 @@ func TestCRDFor_RejectsAStatusPathItCannotDeclare(t *testing.T) {
 		{"nested", ".status.a.b", ".status.a.b"},
 		{"not under status", ".spec.thing", ".spec.thing"},
 		{"bare", "primary", "primary"},
+		{"reserved conditions", ".status.conditions", "conditions"},
+		{"reserved observedGeneration", ".status.observedGeneration", "observedGeneration"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

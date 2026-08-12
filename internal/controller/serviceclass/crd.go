@@ -134,11 +134,20 @@ func statusSchema(sources []v1alpha1.StatusSource) (apiextensionsv1.JSONSchemaPr
 		},
 	}
 
+	reserved := make(map[string]struct{}, len(props))
+	for name := range props {
+		reserved[name] = struct{}{}
+	}
+
 	for _, s := range sources {
 		field, ok := strings.CutPrefix(s.Path, ".status.")
 		if !ok || field == "" || strings.Contains(field, ".") {
 			return apiextensionsv1.JSONSchemaProps{}, fmt.Errorf(
 				"statusFrom path %q must be .status.<field>", s.Path)
+		}
+		if _, ok := reserved[field]; ok {
+			return apiextensionsv1.JSONSchemaProps{}, fmt.Errorf(
+				"statusFrom path %q: field %q is reserved for the status every generated kind carries", s.Path, field)
 		}
 		// Every value readStatusFrom produces is a string: it renders a
 		// JSONPath into a buffer.
