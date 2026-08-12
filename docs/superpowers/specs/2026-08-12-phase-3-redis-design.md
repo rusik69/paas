@@ -1,6 +1,9 @@
 # Phase 3, part 2 — redis, and the property it exists to test
 
-- **Status:** approved, not implemented
+- **Status:** implemented. Proven by `TestRedis_BecomesReadyAndReportsItsReplicaCount`,
+  `TestRedis_StoresWhatWasWritten`, `TestRedis_OffSchemaFieldIsRejectedWithItsOwnMessage`, and
+  `TestRedis_DeleteReclaimsEverything`, on real Talos guests, with the postgres
+  `TestService_*` suite passing in the same run.
 - **Date:** 2026-08-12
 - **Covers:** the second catalog entry of roadmap phase 3. `bucket` stays outstanding.
 - **Depends on:** the machinery from
@@ -113,6 +116,48 @@ is cheap, so:
 **And the property itself**, checked at review rather than in code: the diff for this entry
 contains no `.go` changes beyond the `statusSchema` generalisation. That is the actual
 deliverable, and it is worth stating in the roadmap when it lands.
+
+## Findings
+
+**The claim held.** `git diff --stat` from the commit before the first task to the last shows
+exactly one production Go file changed: `internal/controller/serviceclass/crd.go`, generalising
+`statusSchema` — the one change [budgeted above](#the-one-go-change-and-why-there-is-exactly-one)
+before redis existed to need it. Everything else the entry needed was three test files
+(`internal/controller/serviceclass/crd_test.go`, `internal/schema/structural_test.go`,
+`test/e2e/redis_test.go`) and the five non-Go files the design promised: `hack/versions.sh`, the
+four `packages/apps/redis/` files, and `packages/system/catalog/templates/redis.yaml`. A second
+service really did cost a chart and a catalog template and nothing in Go beyond the change
+already planned for it — measured, not asserted, and the postgres `TestService_*` suite stayed
+green in the same run, which is what proves the generalisation did not regress the machinery
+every other generated CRD depends on.
+
+**The chart leaked the tenant's volume on delete, and only the e2e could find it.**
+`TestRedis_DeleteReclaimsEverything` failed on its first run: the `HelmRelease` and the
+`StatefulSet` were both gone, but the PVC stayed `Bound`. Helm never creates a StatefulSet's
+`volumeClaimTemplate` PVCs — the StatefulSet controller does, at scale-up — so they are absent
+from the release manifest and `helm uninstall` never touches them, and Kubernetes deliberately
+leaves them behind when the StatefulSet itself is deleted. `postgres` never hit this because CNPG
+owner-references its PVCs to its `Cluster` (see the [phase 3 part 1
+findings](2026-08-11-phase-3-serviceclass-design.md#findings)); a hand-written StatefulSet chart
+gets no such reference for free. Fixed with `spec.persistentVolumeClaimRetentionPolicy`
+(`whenDeleted: Delete`, `whenScaled: Retain`) on the StatefulSet, after which the test passes in
+43s. This is a trap for every future hand-written StatefulSet chart in this catalog, not just
+this one.
+
+**`statusSchema` was fail-open for its own reserved names.** The generalisation had to reserve
+`.status.conditions` and `.status.ready` from being redeclared by a class's own `statusFrom`, and
+the first version of that check did not actually enforce it: a `ServiceClass` naming
+`.status.conditions` in `statusFrom` would have overwritten the conditions array's schema with a
+string and produced a CRD that looked valid but rejected every status write the API server made
+afterward. Found in review, not on the cluster; fixed by deriving the reserved set from the
+seeded map's own keys instead of a second, hand-maintained list that could drift from it.
+
+**The deliberate absence held.** `packages/apps/redis` does not carry
+`policy.paas.io/allow-to-apiserver` — Valkey never talks to the API server — and nothing broke.
+This is the demonstration [promised above](#what-this-entry-tests-for-free): the chart-contract
+label added after CNPG's instance manager was blocked by the tenant default-deny policy is a
+genuine per-pod opt-in, tested here on a chart that has no reason to carry it, rather than
+something every chart in the catalog copies defensively regardless of need.
 
 ## Risks
 
