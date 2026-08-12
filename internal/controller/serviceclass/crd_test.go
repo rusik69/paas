@@ -107,6 +107,87 @@ func TestCRDFor_RejectsUnrepresentableSchema(t *testing.T) {
 	}
 }
 
+func TestCRDFor_DeclaresEachStatusFromPath(t *testing.T) {
+	sc := testClass()
+	sc.Spec.StatusFrom = []v1alpha1.StatusSource{{
+		Path:     ".status.ready",
+		From:     v1alpha1.ObjectRef{APIVersion: "apps/v1", Kind: "StatefulSet"},
+		JSONPath: ".status.readyReplicas",
+	}}
+
+	crd, err := CRDFor(sc, []byte(`{"type":"object"}`))
+	if err != nil {
+		t.Fatalf("CRDFor: %v", err)
+	}
+
+	status := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["status"]
+	if _, ok := status.Properties["ready"]; !ok {
+		t.Error("ready is not declared, so the API server would drop it on write")
+	}
+	if _, ok := status.Properties["primary"]; ok {
+		t.Error("primary is still declared for a class that never mentions it")
+	}
+	for _, always := range []string{"observedGeneration", "conditions"} {
+		if _, ok := status.Properties[always]; !ok {
+			t.Errorf("%s is missing; it belongs to every generated kind", always)
+		}
+	}
+}
+
+func TestCRDFor_PostgresStatusPathStillDeclared(t *testing.T) {
+	crd, err := CRDFor(testClass(), []byte(`{"type":"object"}`))
+	if err != nil {
+		t.Fatalf("CRDFor: %v", err)
+	}
+	status := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["status"]
+	if _, ok := status.Properties["primary"]; !ok {
+		t.Error("primary is no longer declared — this regresses the only shipped catalog entry")
+	}
+}
+
+func TestCRDFor_NoStatusFromDeclaresOnlyTheCommonFields(t *testing.T) {
+	sc := testClass()
+	sc.Spec.StatusFrom = nil
+
+	crd, err := CRDFor(sc, []byte(`{"type":"object"}`))
+	if err != nil {
+		t.Fatalf("CRDFor: %v", err)
+	}
+	status := crd.Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["status"]
+	if len(status.Properties) != 2 {
+		t.Errorf("status has %d properties, want just observedGeneration and conditions", len(status.Properties))
+	}
+}
+
+func TestCRDFor_RejectsAStatusPathItCannotDeclare(t *testing.T) {
+	cases := []struct{ name, path, want string }{
+		{"nested", ".status.a.b", ".status.a.b"},
+		{"not under status", ".spec.thing", ".spec.thing"},
+		{"bare", "primary", "primary"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := testClass()
+			sc.Spec.StatusFrom = []v1alpha1.StatusSource{{
+				Path:     tc.path,
+				From:     v1alpha1.ObjectRef{APIVersion: "apps/v1", Kind: "StatefulSet"},
+				JSONPath: ".status.x",
+			}}
+
+			crd, err := CRDFor(sc, []byte(`{"type":"object"}`))
+			if err == nil {
+				t.Fatal("CRDFor accepted a path it cannot declare; the field would be dropped silently on write")
+			}
+			if crd != nil {
+				t.Error("CRDFor returned a CRD alongside its error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want it to name the offending path %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestGVKFor(t *testing.T) {
 	gvk := GVKFor(testClass())
 	if gvk.Group != Group || gvk.Version != Version || gvk.Kind != "Postgres" {
