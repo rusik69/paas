@@ -34,6 +34,19 @@ metadata:
 spec:
   serviceName: {{ .Release.Name }}
   replicas: 1
+  {{- /*
+    volumeClaimTemplate PVCs are created by the StatefulSet controller, not by
+    Helm, so they are outside the release manifest: a helm uninstall never
+    touches them, and by default Kubernetes leaves them Bound forever after
+    the StatefulSet is gone. Delete-on-delete is what makes deleting a Redis
+    actually reclaim its volume. whenScaled stays Retain: this chart is fixed
+    at one replica so it should never fire, but a workload that scaled down
+    should not lose data as a side effect of a policy nobody meant to apply
+    to that case.
+  */}}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Delete
+    whenScaled: Retain
   selector:
     matchLabels:
       paas.io/service-name: {{ .Release.Name }}
